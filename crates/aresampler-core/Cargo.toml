@@ -1,0 +1,10 @@
+[package]
+name = "aresampler-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+wasapi = "0.21"
+hound = "3.5"
+sysinfo = "0.31"

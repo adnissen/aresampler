@@ -1,0 +1,14 @@
+[package]
+name = "aresampler-cli"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "aresampler"
+path = "src/main.rs"
+
+[dependencies]
+aresampler-core = { path = "../aresampler-core" }
+anyhow = "1.0"
+clap = { version = "4", features = ["derive"] }
+ctrlc = "3.4"
