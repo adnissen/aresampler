@@ -1,0 +1,11 @@
+[package]
+name = "aresampler"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+wasapi = "0.21"
+hound = "3.5"
+ctrlc = "3.4"
+anyhow = "1.0"
