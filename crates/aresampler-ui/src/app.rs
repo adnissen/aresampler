@@ -147,14 +147,22 @@ impl AppState {
     }
 
     fn browse_output(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        // Use a simple text input for file path since GPUI file dialogs have API differences
-        // For now, set a default path - in production you'd use platform-specific file dialog
-        let default_path = std::env::current_dir()
-            .unwrap_or_default()
-            .join("recording.wav");
-        self.output_path = Some(default_path);
-        self.error_message = None;
-        cx.notify();
+        let directory = std::env::current_dir().unwrap_or_default();
+        let receiver = cx.prompt_for_new_path(&directory, Some("recording.wav"));
+
+        cx.spawn(async move |this, cx| {
+            if let Ok(result) = receiver.await {
+                if let Ok(Some(path)) = result {
+                    this.update(cx, |state, cx| {
+                        state.output_path = Some(path);
+                        state.error_message = None;
+                        cx.notify();
+                    })
+                    .ok();
+                }
+            }
+        })
+        .detach();
     }
 
     fn refresh_processes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
