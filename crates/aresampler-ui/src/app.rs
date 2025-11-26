@@ -12,6 +12,7 @@ use gpui_component::{
 };
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
+use std::time::Instant;
 
 // Newtype wrapper to implement SelectItem (orphan rule workaround)
 #[derive(Clone, Debug)]
@@ -62,6 +63,9 @@ pub struct AppState {
 
     // Error message
     error_message: Option<String>,
+
+    // Last time we triggered a render update
+    last_render_time: Option<Instant>,
 }
 
 impl AppState {
@@ -120,6 +124,7 @@ impl AppState {
             capture_session: None,
             event_receiver: None,
             error_message: None,
+            last_render_time: None,
         }
     }
 
@@ -268,6 +273,25 @@ impl AppState {
         self.event_receiver = None;
         cx.notify();
     }
+
+    fn schedule_next_frame_check(window: &mut Window, cx: &mut Context<Self>) {
+        cx.on_next_frame(window, |this, w, cx| {
+            if this.is_recording {
+                let now = Instant::now();
+                let should_notify = this
+                    .last_render_time
+                    .map(|last| now.duration_since(last).as_millis() >= 100)
+                    .unwrap_or(true);
+                if should_notify {
+                    this.last_render_time = Some(now);
+                    cx.notify();
+                } else {
+                    // Keep checking every frame until 100ms passes
+                    Self::schedule_next_frame_check(w, cx);
+                }
+            }
+        });
+    }
 }
 
 impl Render for AppState {
@@ -275,8 +299,8 @@ impl Render for AppState {
         // Poll for capture events during render (simple approach)
         if self.is_recording {
             self.poll_capture_events();
-            // Request another frame to continue polling
-            cx.on_next_frame(window, |_this, _w, cx| cx.notify());
+            // Request another frame to continue polling, but only notify every 100ms
+            Self::schedule_next_frame_check(window, cx);
         }
 
         // If we don't have permission, show permission request UI
