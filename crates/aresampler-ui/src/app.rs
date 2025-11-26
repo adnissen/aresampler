@@ -376,19 +376,17 @@ impl Render for AppState {
                     .gap_2()
                     .child(div().text_sm().child("Select Application:"))
                     .child(
-                        h_flex()
-                            .gap_2()
+                        div()
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(|this, _, window, cx| {
+                                    this.refresh_processes(window, cx);
+                                }),
+                            )
                             .child(
                                 Select::new(&self.select_state)
                                     .w_full()
                                     .placeholder("Select an application..."),
-                            )
-                            .child(
-                                Button::new("refresh")
-                                    .label("Refresh")
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.refresh_processes(window, cx);
-                                    })),
                             ),
                     ),
             )
