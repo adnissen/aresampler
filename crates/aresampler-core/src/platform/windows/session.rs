@@ -1,25 +1,22 @@
+//! Windows audio session enumeration using WASAPI
+
+use crate::types::AudioSessionInfo;
 use anyhow::Result;
-use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
 use std::collections::HashSet;
 use std::thread;
+use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
 use wasapi::{DeviceCollection, Direction};
 
-/// Information about an active audio session
-#[derive(Clone, Debug)]
-pub struct AudioSessionInfo {
-    pub process_id: u32,
-    pub process_name: String,
-}
-
 /// Enumerate all processes with active WASAPI audio sessions
-/// Filters to parent processes only
 ///
 /// This function spawns a separate thread because WASAPI requires COM in MTA mode,
 /// but GUI frameworks like GPUI initialize COM in STA mode.
 pub fn enumerate_audio_sessions() -> Result<Vec<AudioSessionInfo>> {
-    // Spawn a thread that initializes COM in MTA mode for WASAPI
     let handle = thread::spawn(enumerate_audio_sessions_impl);
-    handle.join().map_err(|_| anyhow::anyhow!("Thread panicked"))?.map_err(|e| e.into())
+    handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("Thread panicked"))?
+        .map_err(|e| e.into())
 }
 
 /// Internal implementation that must run in a thread with MTA COM initialization
@@ -27,7 +24,10 @@ fn enumerate_audio_sessions_impl() -> Result<Vec<AudioSessionInfo>> {
     // Initialize COM in MTA mode for WASAPI
     let hr = wasapi::initialize_mta();
     if hr.is_err() {
-        return Err(anyhow::anyhow!("Failed to initialize COM: HRESULT {:#x}", hr.0));
+        return Err(anyhow::anyhow!(
+            "Failed to initialize COM: HRESULT {:#x}",
+            hr.0
+        ));
     }
 
     let mut sessions = Vec::new();
@@ -93,15 +93,16 @@ fn enumerate_audio_sessions_impl() -> Result<Vec<AudioSessionInfo>> {
             // Get process name
             if let Some(process) = sys.process(Pid::from_u32(resolved_pid)) {
                 sessions.push(AudioSessionInfo {
-                    process_id: resolved_pid,
-                    process_name: process.name().to_string_lossy().to_string(),
+                    pid: resolved_pid,
+                    name: process.name().to_string_lossy().to_string(),
+                    bundle_id: None, // Windows doesn't have bundle IDs
                 });
             }
         }
     }
 
     // Sort by process name for consistent display
-    sessions.sort_by(|a, b| a.process_name.to_lowercase().cmp(&b.process_name.to_lowercase()));
+    sessions.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
 
     Ok(sessions)
 }

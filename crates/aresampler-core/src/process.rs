@@ -1,35 +1,13 @@
-use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
+//! Cross-platform process utilities
 
-#[derive(Clone, Debug)]
-pub struct ProcessInfo {
-    pub pid: u32,
-    pub name: String,
-    pub exe_path: Option<String>,
-}
+use crate::types::ProcessInfo;
+use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
 
 /// Check if a process with the given PID exists
 pub fn process_exists(pid: u32) -> bool {
-    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
-
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn OpenProcess(
-            dwDesiredAccess: u32,
-            bInheritHandle: i32,
-            dwProcessId: u32,
-        ) -> *mut std::ffi::c_void;
-        fn CloseHandle(hObject: *mut std::ffi::c_void) -> i32;
-    }
-
-    unsafe {
-        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-        if handle.is_null() {
-            false
-        } else {
-            CloseHandle(handle);
-            true
-        }
-    }
+    let refresh = RefreshKind::new().with_processes(ProcessRefreshKind::new());
+    let sys = System::new_with_specifics(refresh);
+    sys.process(Pid::from_u32(pid)).is_some()
 }
 
 /// Get detailed process information

@@ -1,13 +1,15 @@
 use aresampler_core::{
-    enumerate_audio_sessions, AudioSessionInfo, CaptureConfig, CaptureEvent,
-    CaptureSession, CaptureStats,
+    enumerate_audio_sessions, is_capture_available, request_capture_permission,
+    AudioSessionInfo, CaptureConfig, CaptureEvent, CaptureSession, CaptureStats,
+    PermissionStatus,
 };
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::{
     button::{Button, ButtonVariants},
+    h_flex,
     select::{Select, SelectEvent, SelectItem, SelectState, SearchableVec},
-    h_flex, v_flex, Disableable,
+    v_flex, Disableable,
 };
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
@@ -15,15 +17,15 @@ use std::sync::mpsc::Receiver;
 // Newtype wrapper to implement SelectItem (orphan rule workaround)
 #[derive(Clone, Debug)]
 pub struct ProcessItem {
-    pub process_id: u32,
-    pub process_name: String,
+    pub pid: u32,
+    pub name: String,
 }
 
 impl From<AudioSessionInfo> for ProcessItem {
     fn from(info: AudioSessionInfo) -> Self {
         Self {
-            process_id: info.process_id,
-            process_name: info.process_name,
+            pid: info.pid,
+            name: info.name,
         }
     }
 }
@@ -32,15 +34,19 @@ impl SelectItem for ProcessItem {
     type Value = u32;
 
     fn value(&self) -> &Self::Value {
-        &self.process_id
+        &self.pid
     }
 
     fn title(&self) -> SharedString {
-        format!("{} (PID: {})", self.process_name, self.process_id).into()
+        format!("{} (PID: {})", self.name, self.pid).into()
     }
 }
 
 pub struct AppState {
+    // Permission state
+    has_permission: bool,
+    permission_error: Option<String>,
+
     // Process selection
     processes: Vec<ProcessItem>,
     select_state: Entity<SelectState<SearchableVec<ProcessItem>>>,
@@ -64,31 +70,48 @@ impl AppState {
         // Note: We don't call initialize_audio() here because GPUI initializes COM in STA mode,
         // but WASAPI requires MTA. The capture thread handles its own COM initialization.
 
+        // Check permission status
+        let has_permission = is_capture_available().unwrap_or(false);
+        let permission_error = if !has_permission {
+            Some("Screen Recording permission required".to_string())
+        } else {
+            None
+        };
+
         // Enumerate processes with audio sessions
-        let processes: Vec<ProcessItem> = enumerate_audio_sessions()
-            .unwrap_or_default()
-            .into_iter()
-            .map(ProcessItem::from)
-            .collect();
+        let processes: Vec<ProcessItem> = if has_permission {
+            enumerate_audio_sessions()
+                .unwrap_or_default()
+                .into_iter()
+                .map(ProcessItem::from)
+                .collect()
+        } else {
+            Vec::new()
+        };
         let searchable = SearchableVec::new(processes.clone());
 
         // Create select state
         let select_state = cx.new(|cx| SelectState::new(searchable, None, window, cx));
 
         // Subscribe to select events
-        cx.subscribe(&select_state, |this, _, event: &SelectEvent<SearchableVec<ProcessItem>>, cx| {
-            if let SelectEvent::Confirm(Some(pid)) = event {
-                // Find the selected process by PID
-                if let Some(process) = this.processes.iter().find(|p| p.process_id == *pid) {
-                    this.selected_process = Some(process.clone());
-                    this.error_message = None;
-                    cx.notify();
+        cx.subscribe(
+            &select_state,
+            |this, _, event: &SelectEvent<SearchableVec<ProcessItem>>, cx| {
+                if let SelectEvent::Confirm(Some(pid)) = event {
+                    // Find the selected process by PID
+                    if let Some(process) = this.processes.iter().find(|p| p.pid == *pid) {
+                        this.selected_process = Some(process.clone());
+                        this.error_message = None;
+                        cx.notify();
+                    }
                 }
-            }
-        })
+            },
+        )
         .detach();
 
         Self {
+            has_permission,
+            permission_error,
             processes,
             select_state,
             selected_process: None,
@@ -99,6 +122,29 @@ impl AppState {
             event_receiver: None,
             error_message: None,
         }
+    }
+
+    fn request_permission(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match request_capture_permission() {
+            Ok(PermissionStatus::Granted) => {
+                self.has_permission = true;
+                self.permission_error = None;
+                // Refresh processes now that we have permission
+                self.refresh_processes(window, cx);
+            }
+            Ok(PermissionStatus::Denied) => {
+                self.permission_error = Some(
+                    "Permission denied. Please grant Screen Recording permission in System Preferences > Privacy & Security > Screen Recording".to_string()
+                );
+            }
+            Ok(PermissionStatus::Unknown) => {
+                self.permission_error = Some("Permission status unknown".to_string());
+            }
+            Err(e) => {
+                self.permission_error = Some(format!("Error requesting permission: {}", e));
+            }
+        }
+        cx.notify();
     }
 
     fn browse_output(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
@@ -151,7 +197,7 @@ impl AppState {
         };
 
         let config = CaptureConfig {
-            pid: process.process_id,
+            pid: process.pid,
             output_path: path.clone(),
             ..Default::default()
         };
@@ -226,6 +272,52 @@ impl Render for AppState {
             cx.notify();
         }
 
+        // If we don't have permission, show permission request UI
+        if !self.has_permission {
+            return v_flex()
+                .size_full()
+                .p_4()
+                .gap_4()
+                .bg(rgb(0x1e1e1e))
+                .text_color(rgb(0xffffff))
+                .child(
+                    v_flex()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_lg()
+                                .font_weight(FontWeight::BOLD)
+                                .child("Permission Required"),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(rgb(0xaaaaaa))
+                                .child("Screen Recording permission is required to capture audio from applications."),
+                        ),
+                )
+                .child(
+                    Button::new("request_permission")
+                        .label("Request Permission")
+                        .primary()
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.request_permission(window, cx);
+                        })),
+                )
+                .when_some(self.permission_error.clone(), |this, msg| {
+                    this.child(
+                        div()
+                            .p_2()
+                            .bg(rgb(0x5c1a1a))
+                            .rounded_md()
+                            .text_sm()
+                            .text_color(rgb(0xff6b6b))
+                            .child(msg),
+                    )
+                })
+                .into_any_element();
+        }
+
         let can_record =
             self.selected_process.is_some() && self.output_path.is_some() && !self.is_recording;
 
@@ -258,7 +350,7 @@ impl Render for AppState {
                             .child(
                                 Select::new(&self.select_state)
                                     .w_full()
-                                    .placeholder("Select an application...")
+                                    .placeholder("Select an application..."),
                             )
                             .child(
                                 Button::new("refresh")
@@ -275,23 +367,25 @@ impl Render for AppState {
                     .gap_2()
                     .child(div().text_sm().child("Output File:"))
                     .child(
-                        h_flex().gap_2().child(
-                            div()
-                                .flex_1()
-                                .px_2()
-                                .py_1()
-                                .bg(rgb(0x2d2d2d))
-                                .rounded_md()
-                                .text_sm()
-                                .child(output_display),
-                        )
-                        .child(
-                            Button::new("browse")
-                                .label("Browse...")
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.browse_output(window, cx);
-                                })),
-                        ),
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .px_2()
+                                    .py_1()
+                                    .bg(rgb(0x2d2d2d))
+                                    .rounded_md()
+                                    .text_sm()
+                                    .child(output_display),
+                            )
+                            .child(
+                                Button::new("browse")
+                                    .label("Browse...")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.browse_output(window, cx);
+                                    })),
+                            ),
                     ),
             )
             // Record button
@@ -349,5 +443,6 @@ impl Render for AppState {
                         .child(msg),
                 )
             })
+            .into_any_element()
     }
 }

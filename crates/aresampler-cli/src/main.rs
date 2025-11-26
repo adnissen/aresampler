@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use aresampler_core::{
-    initialize_audio, process_exists, CaptureConfig, CaptureEvent, CaptureSession,
+    initialize_audio, is_capture_available, process_exists, request_capture_permission,
+    CaptureConfig, CaptureEvent, CaptureSession, PermissionStatus,
 };
 use clap::Parser;
 use std::io::Write;
@@ -24,8 +25,29 @@ struct Args {
 fn main() -> Result<()> {
     let args = Args::parse();
 
-    // Initialize COM for WASAPI
+    // Initialize audio subsystem
     initialize_audio()?;
+
+    // Check if capture is available (permission check on macOS)
+    if !is_capture_available()? {
+        eprintln!("Audio capture is not available.");
+        eprintln!("Requesting capture permission...");
+
+        match request_capture_permission()? {
+            PermissionStatus::Granted => {
+                println!("Permission granted!");
+            }
+            PermissionStatus::Denied => {
+                eprintln!("Permission denied. Please grant Screen Recording permission in:");
+                eprintln!("  System Preferences > Privacy & Security > Screen Recording");
+                std::process::exit(1);
+            }
+            PermissionStatus::Unknown => {
+                eprintln!("Permission status unknown. Please check system settings.");
+                std::process::exit(1);
+            }
+        }
+    }
 
     // Set up Ctrl+C handler
     let running = Arc::new(AtomicBool::new(true));

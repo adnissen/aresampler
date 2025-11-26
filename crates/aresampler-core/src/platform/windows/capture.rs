@@ -1,65 +1,17 @@
+//! Windows audio capture implementation using WASAPI
+
+use crate::process::process_exists;
+use crate::types::{CaptureCommand, CaptureConfig, CaptureEvent, CaptureStats};
 use anyhow::{anyhow, Context, Result};
 use hound::{SampleFormat, WavSpec, WavWriter};
 use std::collections::VecDeque;
 use std::io::BufWriter;
-use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use wasapi::{AudioClient, Direction, SampleType, StreamMode, WaveFormat};
 
-use crate::process::process_exists;
-
-/// Configuration for audio capture
-#[derive(Clone)]
-pub struct CaptureConfig {
-    pub pid: u32,
-    pub output_path: PathBuf,
-    pub sample_rate: u32,
-    pub channels: u16,
-    pub bits_per_sample: u16,
-    pub include_child_processes: bool,
-}
-
-impl Default for CaptureConfig {
-    fn default() -> Self {
-        Self {
-            pid: 0,
-            output_path: PathBuf::new(),
-            sample_rate: 48000,
-            channels: 2,
-            bits_per_sample: 32,
-            include_child_processes: true,
-        }
-    }
-}
-
-/// Real-time statistics during capture
-#[derive(Clone, Debug, Default)]
-pub struct CaptureStats {
-    pub duration_secs: f64,
-    pub total_frames: u64,
-    pub file_size_bytes: u64,
-    pub buffer_frames: usize,
-    pub is_recording: bool,
-}
-
-/// Commands sent to the capture thread
-#[derive(Debug)]
-pub enum CaptureCommand {
-    Stop,
-}
-
-/// Events sent from the capture thread to the UI
-#[derive(Debug)]
-pub enum CaptureEvent {
-    Started { buffer_size: usize },
-    StatsUpdate(CaptureStats),
-    Stopped,
-    Error(String),
-}
-
-/// Manages an audio capture session
+/// Manages an audio capture session on Windows
 pub struct CaptureSession {
     config: CaptureConfig,
     command_tx: Option<Sender<CaptureCommand>>,
@@ -144,14 +96,14 @@ fn run_capture(
     }
 
     // Create application loopback client
-    let mut audio_client =
-        AudioClient::new_application_loopback_client(config.pid, config.include_child_processes)
-            .map_err(|e| {
-                anyhow!(
+    // Note: include_child_processes is now always true (hardcoded)
+    let mut audio_client = AudioClient::new_application_loopback_client(config.pid, true)
+        .map_err(|e| {
+            anyhow!(
                 "Failed to create application loopback client: {}. Make sure the PID is valid.",
                 e
             )
-            })?;
+        })?;
 
     // Define the desired audio format
     let block_align = (config.channels * config.bits_per_sample / 8) as u16;
@@ -189,7 +141,9 @@ fn run_capture(
     let buffer_size = audio_client.get_buffer_size().unwrap_or(4800);
 
     // Notify UI that capture has started
-    let _ = event_tx.send(CaptureEvent::Started { buffer_size: buffer_size as usize });
+    let _ = event_tx.send(CaptureEvent::Started {
+        buffer_size: buffer_size as usize,
+    });
 
     // Set up WAV writer
     let wav_spec = WavSpec {
@@ -199,8 +153,12 @@ fn run_capture(
         sample_format: SampleFormat::Float,
     };
 
-    let file = std::fs::File::create(&config.output_path)
-        .with_context(|| format!("Failed to create output file: {}", config.output_path.display()))?;
+    let file = std::fs::File::create(&config.output_path).with_context(|| {
+        format!(
+            "Failed to create output file: {}",
+            config.output_path.display()
+        )
+    })?;
     let buf_writer = BufWriter::new(file);
     let mut wav_writer = WavWriter::new(buf_writer, wav_spec).context("Failed to create WAV writer")?;
 
