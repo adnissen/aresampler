@@ -18,7 +18,7 @@ fn main() -> Result<()> {
                 origin: Point::default(),
                 size: Size {
                     width: px(450.0),
-                    height: px(350.0),
+                    height: px(400.0),
                 },
             })),
             titlebar: Some(TitlebarOptions {
