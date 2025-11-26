@@ -1,14 +1,13 @@
 use aresampler_core::{
-    enumerate_audio_sessions, is_capture_available, request_capture_permission,
-    AudioSessionInfo, CaptureConfig, CaptureEvent, CaptureSession, CaptureStats,
-    PermissionStatus,
+    enumerate_audio_sessions, is_capture_available, request_capture_permission, AudioSessionInfo,
+    CaptureConfig, CaptureEvent, CaptureSession, CaptureStats, PermissionStatus,
 };
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::{
     button::{Button, ButtonVariants},
     h_flex,
-    select::{Select, SelectEvent, SelectItem, SelectState, SearchableVec},
+    select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState},
     v_flex, Disableable,
 };
 use std::path::PathBuf;
@@ -264,12 +263,12 @@ impl AppState {
 }
 
 impl Render for AppState {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Poll for capture events during render (simple approach)
         if self.is_recording {
             self.poll_capture_events();
             // Request another frame to continue polling
-            cx.notify();
+            cx.on_next_frame(window, |_this, _w, cx| cx.notify());
         }
 
         // If we don't have permission, show permission request UI
