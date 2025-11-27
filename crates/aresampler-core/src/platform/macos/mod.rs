@@ -2,6 +2,7 @@
 
 mod audio;
 mod capture;
+mod icon;
 mod permission;
 mod session;
 

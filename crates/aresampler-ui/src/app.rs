@@ -10,22 +10,61 @@ use gpui_component::{
     select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState},
     v_flex, Disableable,
 };
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
+use std::sync::Arc;
 use std::time::Instant;
 
 // Newtype wrapper to implement SelectItem (orphan rule workaround)
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ProcessItem {
     pub pid: u32,
     pub name: String,
+    /// Pre-rendered icon for GPUI display
+    pub icon: Option<Arc<RenderImage>>,
 }
 
-impl From<AudioSessionInfo> for ProcessItem {
-    fn from(info: AudioSessionInfo) -> Self {
+impl ProcessItem {
+    /// Create a ProcessItem from AudioSessionInfo, using the icon cache for efficiency.
+    /// If the icon is not in the cache, it will be decoded and added.
+    fn from_audio_session(
+        info: AudioSessionInfo,
+        icon_cache: &mut HashMap<String, Arc<RenderImage>>,
+    ) -> Self {
+        // Use bundle_id as cache key, fall back to name if no bundle_id
+        let cache_key = info.bundle_id.clone().unwrap_or_else(|| info.name.clone());
+
+        // Check cache first
+        let icon = if let Some(cached_icon) = icon_cache.get(&cache_key) {
+            Some(cached_icon.clone())
+        } else {
+            // Not in cache - decode and cache it
+            let new_icon = info.icon_png.and_then(|png_bytes| {
+                let img = image::load_from_memory(&png_bytes).ok()?;
+                let mut rgba = img.to_rgba8();
+
+                // Convert RGBA to BGRA (GPUI expects BGRA format)
+                for pixel in rgba.chunks_exact_mut(4) {
+                    pixel.swap(0, 2); // Swap R and B channels
+                }
+
+                let frame = image::Frame::new(rgba);
+                Some(Arc::new(RenderImage::new(vec![frame])))
+            });
+
+            // Cache the icon if we got one
+            if let Some(ref icon) = new_icon {
+                icon_cache.insert(cache_key, icon.clone());
+            }
+
+            new_icon
+        };
+
         Self {
             pid: info.pid,
             name: info.name,
+            icon,
         }
     }
 }
@@ -38,7 +77,42 @@ impl SelectItem for ProcessItem {
     }
 
     fn title(&self) -> SharedString {
-        format!("{} (PID: {})", self.name, self.pid).into()
+        format!("{}", self.name).into()
+    }
+
+    fn display_title(&self) -> Option<AnyElement> {
+        Some(
+            h_flex()
+                .gap_2()
+                .items_center()
+                .when_some(self.icon.clone(), |this, icon| {
+                    this.child(
+                        img(ImageSource::Render(icon))
+                            .size(px(16.0))
+                            .flex_shrink_0(),
+                    )
+                })
+                .child(div().overflow_hidden().text_ellipsis().child(self.title()))
+                .into_any_element(),
+        )
+    }
+
+    fn render(&self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        h_flex()
+            .gap_2()
+            .items_center()
+            .when_some(self.icon.clone(), |this, icon| {
+                this.child(
+                    img(ImageSource::Render(icon))
+                        .size(px(16.0))
+                        .flex_shrink_0(),
+                )
+            })
+            .when(self.icon.is_none(), |this| {
+                // Empty placeholder to maintain alignment when no icon
+                this.child(div().size(px(16.0)).flex_shrink_0())
+            })
+            .child(div().overflow_hidden().text_ellipsis().child(self.title()))
     }
 }
 
@@ -51,6 +125,9 @@ pub struct AppState {
     processes: Vec<ProcessItem>,
     select_state: Entity<SelectState<SearchableVec<ProcessItem>>>,
     selected_process: Option<ProcessItem>,
+
+    // Icon cache: maps bundle_id (or name) to rendered icon
+    icon_cache: HashMap<String, Arc<RenderImage>>,
 
     // Output file
     output_path: Option<PathBuf>,
@@ -81,12 +158,13 @@ impl AppState {
             None
         };
 
-        // Enumerate processes with audio sessions
+        // Initialize icon cache and enumerate processes
+        let mut icon_cache = HashMap::new();
         let processes: Vec<ProcessItem> = if has_permission {
             enumerate_audio_sessions()
                 .unwrap_or_default()
                 .into_iter()
-                .map(ProcessItem::from)
+                .map(|info| ProcessItem::from_audio_session(info, &mut icon_cache))
                 .collect()
         } else {
             Vec::new()
@@ -118,6 +196,7 @@ impl AppState {
             processes,
             select_state,
             selected_process: None,
+            icon_cache,
             output_path: None,
             is_recording: false,
             stats: CaptureStats::default(),
@@ -171,10 +250,11 @@ impl AppState {
     }
 
     fn refresh_processes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Use the icon cache to avoid re-decoding icons for known processes
         self.processes = enumerate_audio_sessions()
             .unwrap_or_default()
             .into_iter()
-            .map(ProcessItem::from)
+            .map(|info| ProcessItem::from_audio_session(info, &mut self.icon_cache))
             .collect();
         let searchable = SearchableVec::new(self.processes.clone());
 

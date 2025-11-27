@@ -96,6 +96,7 @@ fn enumerate_audio_sessions_impl() -> Result<Vec<AudioSessionInfo>> {
                     pid: resolved_pid,
                     name: process.name().to_string_lossy().to_string(),
                     bundle_id: None, // Windows doesn't have bundle IDs
+                    icon_png: None,  // Icons not implemented for Windows
                 });
             }
         }

@@ -20,6 +20,8 @@ pub struct AudioSessionInfo {
     pub name: String,
     /// Bundle identifier (macOS only, None on Windows)
     pub bundle_id: Option<String>,
+    /// Application icon as PNG bytes (macOS only, None if unavailable)
+    pub icon_png: Option<Vec<u8>>,
 }
 
 /// Configuration for audio capture

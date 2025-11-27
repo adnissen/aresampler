@@ -12,3 +12,4 @@ aresampler-core = { path = "../aresampler-core" }
 anyhow = "1.0"
 gpui = "0.2"
 gpui-component = "0.4"
+image = "0.25"
