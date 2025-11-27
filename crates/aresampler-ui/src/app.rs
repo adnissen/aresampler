@@ -2,6 +2,7 @@ use aresampler_core::{
     enumerate_audio_sessions, is_capture_available, request_capture_permission, AudioSessionInfo,
     CaptureConfig, CaptureEvent, CaptureSession, CaptureStats, PermissionStatus,
 };
+use crate::waveform::{WaveformData, WaveformView};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::{
@@ -143,6 +144,10 @@ pub struct AppState {
 
     // Last time we triggered a render update
     last_render_time: Option<Instant>,
+
+    // Waveform data loaded after recording completes
+    waveform_data: Option<Arc<WaveformData>>,
+    waveform_loading: bool,
 }
 
 impl AppState {
@@ -204,6 +209,8 @@ impl AppState {
             event_receiver: None,
             error_message: None,
             last_render_time: None,
+            waveform_data: None,
+            waveform_loading: false,
         }
     }
 
@@ -351,6 +358,31 @@ impl AppState {
         }
         self.is_recording = false;
         self.event_receiver = None;
+
+        // Load waveform data after recording stops
+        if let Some(path) = self.output_path.clone() {
+            self.waveform_loading = true;
+            cx.spawn(async move |this, cx| {
+                // Load waveform in background (target ~2000 buckets)
+                let result = WaveformData::load(&path, 2000);
+
+                this.update(cx, |state, cx| {
+                    state.waveform_loading = false;
+                    match result {
+                        Ok(data) => {
+                            state.waveform_data = Some(Arc::new(data));
+                        }
+                        Err(e) => {
+                            state.error_message = Some(format!("Failed to load waveform: {}", e));
+                        }
+                    }
+                    cx.notify();
+                })
+                .ok();
+            })
+            .detach();
+        }
+
         cx.notify();
     }
 
@@ -550,6 +582,31 @@ impl Render for AppState {
                             .child(format!("Right: {:.1} dB", self.stats.right_rms_db)),
                     ),
             )
+            // Waveform display (show after recording completes)
+            .when_some(self.waveform_data.clone(), |this, data| {
+                this.child(
+                    v_flex()
+                        .gap_2()
+                        .child(div().text_sm().child("Waveform:"))
+                        .child(
+                            div()
+                                .h(px(100.0))
+                                .w_full()
+                                .rounded_md()
+                                .overflow_hidden()
+                                .child(WaveformView::new(data).render()),
+                        ),
+                )
+            })
+            .when(self.waveform_loading, |this| {
+                this.child(
+                    div()
+                        .p_2()
+                        .text_sm()
+                        .text_color(rgb(0x888888))
+                        .child("Loading waveform..."),
+                )
+            })
             // Error message
             .when_some(self.error_message.clone(), |this, msg| {
                 this.child(
