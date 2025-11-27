@@ -225,12 +225,25 @@ fn run_capture(
                 // Update status every 100ms
                 if last_status_update.elapsed() >= Duration::from_millis(100) {
                     let duration = start_time.elapsed();
+                    // Separate interleaved samples into channels and calculate RMS
+                    let num_channels = config.channels as usize;
+                    let left_samples: Vec<f32> =
+                        samples.iter().step_by(num_channels).copied().collect();
+                    let right_samples: Vec<f32> = if num_channels > 1 {
+                        samples.iter().skip(1).step_by(num_channels).copied().collect()
+                    } else {
+                        left_samples.clone()
+                    };
+                    let left_rms_db = calculate_rms_db(&left_samples);
+                    let right_rms_db = calculate_rms_db(&right_samples);
                     let stats = CaptureStats {
                         duration_secs: duration.as_secs_f64(),
                         total_frames,
                         file_size_bytes: total_bytes,
                         buffer_frames: current_buffer_frames,
                         is_recording: true,
+                        left_rms_db,
+                        right_rms_db,
                     };
                     let _ = event_tx.send(CaptureEvent::StatsUpdate(stats));
                     last_status_update = Instant::now();
@@ -267,4 +280,19 @@ fn bytes_to_f32_samples(bytes: &[u8]) -> &[f32] {
         return &[];
     }
     unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const f32, len) }
+}
+
+/// Calculate RMS level in dB from audio samples
+/// Returns -60.0 dB for silence/zero signal
+fn calculate_rms_db(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return -60.0;
+    }
+    let sum_squares: f32 = samples.iter().map(|&s| s * s).sum();
+    let rms = (sum_squares / samples.len() as f32).sqrt();
+    if rms <= 0.0 {
+        -60.0
+    } else {
+        20.0 * rms.log10()
+    }
 }

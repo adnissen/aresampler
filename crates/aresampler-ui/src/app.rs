@@ -458,6 +458,16 @@ impl Render for AppState {
                         div()
                             .text_sm()
                             .child(format!("Buffer: {} frames", self.stats.buffer_frames)),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .child(format!("Left: {:.1} dB", self.stats.left_rms_db)),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .child(format!("Right: {:.1} dB", self.stats.right_rms_db)),
                     ),
             )
             // Error message

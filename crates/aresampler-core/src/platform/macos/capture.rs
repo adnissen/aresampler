@@ -158,12 +158,23 @@ impl SCStreamOutputTrait for AudioHandler {
         // Update status every 100ms
         if state.last_status_update.elapsed() >= Duration::from_millis(100) {
             let duration = state.start_time.elapsed();
+            // Calculate RMS for each channel (left = 0, right = 1)
+            let left_rms_db = channel_samples
+                .first()
+                .map(|s| calculate_rms_db(s))
+                .unwrap_or(-60.0);
+            let right_rms_db = channel_samples
+                .get(1)
+                .map(|s| calculate_rms_db(s))
+                .unwrap_or(-60.0);
             let stats = CaptureStats {
                 duration_secs: duration.as_secs_f64(),
                 total_frames: state.total_frames,
                 file_size_bytes: state.total_bytes,
                 buffer_frames: num_frames,
                 is_recording: true,
+                left_rms_db,
+                right_rms_db,
             };
             let _ = state.event_tx.send(CaptureEvent::StatsUpdate(stats));
             state.last_status_update = Instant::now();
@@ -324,4 +335,19 @@ fn bytes_to_f32_samples(bytes: &[u8]) -> &[f32] {
         return &[];
     }
     unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const f32, len) }
+}
+
+/// Calculate RMS level in dB from audio samples
+/// Returns -60.0 dB for silence/zero signal
+fn calculate_rms_db(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return -60.0;
+    }
+    let sum_squares: f32 = samples.iter().map(|&s| s * s).sum();
+    let rms = (sum_squares / samples.len() as f32).sqrt();
+    if rms <= 0.0 {
+        -60.0
+    } else {
+        20.0 * rms.log10()
+    }
 }

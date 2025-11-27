@@ -45,13 +45,31 @@ impl Default for CaptureConfig {
 }
 
 /// Real-time statistics during capture
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct CaptureStats {
     pub duration_secs: f64,
     pub total_frames: u64,
     pub file_size_bytes: u64,
     pub buffer_frames: usize,
     pub is_recording: bool,
+    /// Left channel RMS level in dB (0 dB = full scale, -60 dB = silence)
+    pub left_rms_db: f32,
+    /// Right channel RMS level in dB (0 dB = full scale, -60 dB = silence)
+    pub right_rms_db: f32,
+}
+
+impl Default for CaptureStats {
+    fn default() -> Self {
+        Self {
+            duration_secs: 0.0,
+            total_frames: 0,
+            file_size_bytes: 0,
+            buffer_frames: 0,
+            is_recording: false,
+            left_rms_db: -60.0,
+            right_rms_db: -60.0,
+        }
+    }
 }
 
 /// Commands sent to the capture thread
