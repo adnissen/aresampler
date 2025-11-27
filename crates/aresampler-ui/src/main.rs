@@ -3,6 +3,7 @@ use gpui::*;
 use gpui_component::init as init_components;
 
 mod app;
+mod playback;
 mod waveform;
 
 fn main() -> Result<()> {

@@ -2,6 +2,39 @@ use gpui::*;
 use std::path::Path as StdPath;
 use std::sync::Arc;
 
+/// Represents the trim selection state with normalized positions (0.0 to 1.0)
+#[derive(Clone)]
+pub struct TrimSelection {
+    /// Start position as a fraction of total duration (0.0 to 1.0)
+    pub start: f32,
+    /// End position as a fraction of total duration (0.0 to 1.0)
+    pub end: f32,
+}
+
+impl Default for TrimSelection {
+    fn default() -> Self {
+        Self { start: 0.0, end: 1.0 }
+    }
+}
+
+impl TrimSelection {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns true if selection differs from default (full range)
+    pub fn is_modified(&self) -> bool {
+        self.start > 0.001 || self.end < 0.999
+    }
+}
+
+/// Which handle is being dragged (if any)
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum DragHandle {
+    Start,
+    End,
+}
+
 /// Processed waveform data optimized for rendering.
 /// Contains downsampled min/max pairs for efficient drawing at any width.
 #[derive(Clone)]
@@ -161,17 +194,30 @@ pub struct WaveformView {
     line_width: f32,
     background: Hsla,
     vertical_padding: f32,
+    trim_selection: Option<TrimSelection>,
+    dimmed_color: Hsla,
+    handle_color: Hsla,
+    handle_width: f32,
 }
 
 impl WaveformView {
     pub fn new(data: Arc<WaveformData>) -> Self {
         Self {
             data,
-            color: hsla(0.55, 0.7, 0.5, 1.0), // Cyan-ish blue
+            color: hsla(0.55, 0.7, 0.5, 1.0),      // Cyan-ish blue
             line_width: 1.5,
             background: hsla(0.0, 0.0, 0.12, 1.0), // Dark gray
             vertical_padding: 0.1,                  // 10% padding top and bottom
+            trim_selection: None,
+            dimmed_color: hsla(0.0, 0.0, 0.0, 0.6),    // Semi-transparent black overlay
+            handle_color: hsla(0.55, 0.9, 0.7, 1.0),   // Bright cyan accent
+            handle_width: 4.0,
         }
+    }
+
+    pub fn with_trim_selection(mut self, selection: TrimSelection) -> Self {
+        self.trim_selection = Some(selection);
+        self
     }
 
     /// Render the waveform as an element using GPUI canvas
@@ -181,6 +227,10 @@ impl WaveformView {
         let line_width = self.line_width;
         let background = self.background;
         let vertical_padding = self.vertical_padding;
+        let trim_selection = self.trim_selection;
+        let dimmed_color = self.dimmed_color;
+        let handle_color = self.handle_color;
+        let handle_width = self.handle_width;
 
         canvas(
             // Prepaint: calculate the path based on bounds
@@ -189,7 +239,16 @@ impl WaveformView {
                 let height: f32 = bounds.size.height.into();
 
                 if width <= 0.0 || height <= 0.0 || data.peaks.is_empty() {
-                    return (bounds, None, data.clone(), background);
+                    return (
+                        bounds,
+                        None,
+                        data.clone(),
+                        background,
+                        trim_selection.clone(),
+                        dimmed_color,
+                        handle_color,
+                        handle_width,
+                    );
                 }
 
                 // Calculate drawable area with padding
@@ -225,15 +284,28 @@ impl WaveformView {
                 }
 
                 let path = builder.build().ok();
-                (bounds, path, data.clone(), background)
+                (
+                    bounds,
+                    path,
+                    data.clone(),
+                    background,
+                    trim_selection.clone(),
+                    dimmed_color,
+                    handle_color,
+                    handle_width,
+                )
             },
-            // Paint: draw the background and path
+            // Paint: draw the background, path, trim overlays, and handles
             move |_bounds: Bounds<Pixels>,
-                  (quad_bounds, path, _data, bg): (
+                  (quad_bounds, path, _data, bg, trim_sel, dim_color, hdl_color, hdl_width): (
                 Bounds<Pixels>,
                 Option<Path<Pixels>>,
                 Arc<WaveformData>,
                 Hsla,
+                Option<TrimSelection>,
+                Hsla,
+                Hsla,
+                f32,
             ),
                   window: &mut Window,
                   _cx: &mut App| {
@@ -251,8 +323,152 @@ impl WaveformView {
                 if let Some(path) = path {
                     window.paint_path(path, color);
                 }
+
+                // Draw trim overlays and handles if trim selection exists
+                if let Some(trim) = trim_sel {
+                    let origin_x: f32 = quad_bounds.origin.x.into();
+                    let origin_y: f32 = quad_bounds.origin.y.into();
+                    let width: f32 = quad_bounds.size.width.into();
+                    let height: f32 = quad_bounds.size.height.into();
+
+                    // Draw left dimmed region (0 to start)
+                    if trim.start > 0.001 {
+                        let dim_width = width * trim.start;
+                        window.paint_quad(PaintQuad {
+                            bounds: Bounds {
+                                origin: point(px(origin_x), px(origin_y)),
+                                size: Size {
+                                    width: px(dim_width),
+                                    height: px(height),
+                                },
+                            },
+                            corner_radii: Corners {
+                                top_left: px(4.0),
+                                top_right: px(0.0),
+                                bottom_left: px(4.0),
+                                bottom_right: px(0.0),
+                            },
+                            background: dim_color.into(),
+                            border_widths: Edges::all(px(0.0)),
+                            border_color: transparent_black(),
+                            border_style: BorderStyle::default(),
+                        });
+                    }
+
+                    // Draw right dimmed region (end to 1)
+                    if trim.end < 0.999 {
+                        let end_x = width * trim.end;
+                        let dim_width = width - end_x;
+                        window.paint_quad(PaintQuad {
+                            bounds: Bounds {
+                                origin: point(px(origin_x + end_x), px(origin_y)),
+                                size: Size {
+                                    width: px(dim_width),
+                                    height: px(height),
+                                },
+                            },
+                            corner_radii: Corners {
+                                top_left: px(0.0),
+                                top_right: px(4.0),
+                                bottom_left: px(0.0),
+                                bottom_right: px(4.0),
+                            },
+                            background: dim_color.into(),
+                            border_widths: Edges::all(px(0.0)),
+                            border_color: transparent_black(),
+                            border_style: BorderStyle::default(),
+                        });
+                    }
+
+                    // Draw start handle (vertical bar)
+                    let start_x = origin_x + (width * trim.start);
+                    window.paint_quad(PaintQuad {
+                        bounds: Bounds {
+                            origin: point(px(start_x - hdl_width / 2.0), px(origin_y)),
+                            size: Size {
+                                width: px(hdl_width),
+                                height: px(height),
+                            },
+                        },
+                        corner_radii: Corners::all(px(2.0)),
+                        background: hdl_color.into(),
+                        border_widths: Edges::all(px(0.0)),
+                        border_color: transparent_black(),
+                        border_style: BorderStyle::default(),
+                    });
+
+                    // Draw end handle (vertical bar)
+                    let end_x = origin_x + (width * trim.end);
+                    window.paint_quad(PaintQuad {
+                        bounds: Bounds {
+                            origin: point(px(end_x - hdl_width / 2.0), px(origin_y)),
+                            size: Size {
+                                width: px(hdl_width),
+                                height: px(height),
+                            },
+                        },
+                        corner_radii: Corners::all(px(2.0)),
+                        background: hdl_color.into(),
+                        border_widths: Edges::all(px(0.0)),
+                        border_color: transparent_black(),
+                        border_style: BorderStyle::default(),
+                    });
+                }
             },
         )
         .size_full()
     }
+}
+
+/// Trim a WAV file to the specified normalized range and overwrite it
+pub fn trim_wav_file(
+    path: &StdPath,
+    start_fraction: f32,
+    end_fraction: f32,
+) -> Result<(), WaveformError> {
+    let reader = hound::WavReader::open(path)?;
+    let spec = reader.spec();
+    let total_frames = reader.duration() as usize;
+    let channels = spec.channels as usize;
+
+    // Validate format
+    if spec.sample_format != hound::SampleFormat::Float {
+        return Err(WaveformError::UnsupportedFormat(
+            "Expected 32-bit float format".into(),
+        ));
+    }
+
+    // Calculate frame ranges
+    let start_frame = (total_frames as f32 * start_fraction) as usize;
+    let end_frame = (total_frames as f32 * end_fraction) as usize;
+
+    if end_frame <= start_frame {
+        return Err(WaveformError::UnsupportedFormat("Invalid trim range".into()));
+    }
+
+    // Read all samples into memory
+    let samples: Vec<f32> = reader
+        .into_samples::<f32>()
+        .filter_map(|s| s.ok())
+        .collect();
+
+    // Extract the trimmed portion
+    let start_sample = start_frame * channels;
+    let end_sample = (end_frame * channels).min(samples.len());
+    let trimmed_samples = &samples[start_sample..end_sample];
+
+    // Write to a temp file first (safer approach for atomic operation)
+    let temp_path = path.with_extension("wav.tmp");
+    {
+        let mut writer = hound::WavWriter::create(&temp_path, spec)?;
+        for sample in trimmed_samples {
+            writer.write_sample(*sample)?;
+        }
+        writer.finalize()?;
+    }
+
+    // Replace original with temp
+    std::fs::rename(&temp_path, path)?;
+
+    Ok(())
 }
