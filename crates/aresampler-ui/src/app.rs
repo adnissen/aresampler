@@ -909,10 +909,17 @@ impl Render for AppState {
                                     })),
                             )
                             .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(rgb(0x888888))
-                                    .child("(0 = disabled)"),
+                                Button::new("pre_roll_off")
+                                    .label("Off")
+                                    .disabled(self.pre_roll_seconds == 0.0 || self.is_recording || self.is_monitoring)
+                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                        // Stop monitoring if active
+                                        if this.is_monitoring {
+                                            this.stop_monitoring(cx);
+                                        }
+                                        this.pre_roll_seconds = 0.0;
+                                        cx.notify();
+                                    })),
                             ),
                     ),
             )
