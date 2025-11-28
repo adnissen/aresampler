@@ -10,7 +10,7 @@ use gpui_component::{
     button::{Button, ButtonVariants},
     h_flex,
     select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState},
-    v_flex, Disableable,
+    v_flex,
 };
 use std::collections::HashMap;
 use std::ops::DerefMut;
@@ -18,6 +18,40 @@ use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 use std::time::Instant;
+
+// Color scheme
+mod colors {
+    use gpui::{rgb, Rgba};
+
+    // Backgrounds
+    pub fn bg_primary() -> Rgba { rgb(0x0a0a0b) }
+    pub fn bg_secondary() -> Rgba { rgb(0x111113) }
+    pub fn bg_tertiary() -> Rgba { rgb(0x18181b) }
+
+    // Borders
+    pub fn border() -> Rgba { rgb(0x27272a) }
+
+    // Text
+    pub fn text_primary() -> Rgba { rgb(0xfafafa) }
+    pub fn text_secondary() -> Rgba { rgb(0xa1a1aa) }
+    pub fn text_muted() -> Rgba { rgb(0x52525b) }
+
+    // Accent
+    pub fn accent() -> Rgba { rgb(0x22d3ee) }
+
+    // Recording
+    pub fn recording() -> Rgba { rgb(0xef4444) }
+
+    // Success (for level display)
+    pub fn success() -> Rgba { rgb(0x22c55e) }
+
+    // Error
+    pub fn error_bg() -> Rgba { rgb(0x5c1a1a) }
+    pub fn error_text() -> Rgba { rgb(0xff6b6b) }
+
+    // File icon purple
+    pub fn file_icon() -> Rgba { rgb(0x8b5cf6) }
+}
 
 // Newtype wrapper to implement SelectItem (orphan rule workaround)
 #[derive(Clone)]
@@ -748,45 +782,50 @@ impl Render for AppState {
         if !self.has_permission {
             return v_flex()
                 .size_full()
-                .p_4()
-                .gap_4()
-                .bg(rgb(0x1e1e1e))
-                .text_color(rgb(0xffffff))
+                .bg(colors::bg_primary())
+                .text_color(colors::text_primary())
+                .child(self.render_header())
                 .child(
                     v_flex()
-                        .gap_2()
+                        .flex_1()
+                        .p_4()
+                        .gap_4()
                         .child(
-                            div()
-                                .text_lg()
-                                .font_weight(FontWeight::BOLD)
-                                .child("Permission Required"),
+                            v_flex()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .text_lg()
+                                        .font_weight(FontWeight::BOLD)
+                                        .child("Permission Required"),
+                                )
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(colors::text_secondary())
+                                        .child("Screen Recording permission is required to capture audio from applications."),
+                                ),
                         )
                         .child(
-                            div()
-                                .text_sm()
-                                .text_color(rgb(0xaaaaaa))
-                                .child("Screen Recording permission is required to capture audio from applications."),
-                        ),
+                            Button::new("request_permission")
+                                .label("Request Permission")
+                                .primary()
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.request_permission(window, cx);
+                                })),
+                        )
+                        .when_some(self.permission_error.clone(), |this, msg| {
+                            this.child(
+                                div()
+                                    .p_2()
+                                    .bg(colors::error_bg())
+                                    .rounded_md()
+                                    .text_sm()
+                                    .text_color(colors::error_text())
+                                    .child(msg),
+                            )
+                        }),
                 )
-                .child(
-                    Button::new("request_permission")
-                        .label("Request Permission")
-                        .primary()
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.request_permission(window, cx);
-                        })),
-                )
-                .when_some(self.permission_error.clone(), |this, msg| {
-                    this.child(
-                        div()
-                            .p_2()
-                            .bg(rgb(0x5c1a1a))
-                            .rounded_md()
-                            .text_sm()
-                            .text_color(rgb(0xff6b6b))
-                            .child(msg),
-                    )
-                })
                 .into_any_element();
         }
 
@@ -796,293 +835,673 @@ impl Render for AppState {
 
         let record_button_label = if self.is_recording {
             "Stop Recording"
-        } else if self.is_monitoring {
-            "Start Recording"
         } else {
             "Start Recording"
         };
 
-        // Determine stats title based on state
-        let stats_title = if self.is_monitoring {
-            "Monitoring (Pre-roll Buffer):"
-        } else if self.is_recording {
-            "Recording Stats:"
-        } else {
-            "Stats:"
-        };
-
-        let output_display = self
-            .output_path
-            .as_ref()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "No file selected".to_string());
+        // Pre-roll values for the segmented toggle
+        let pre_roll_options: [(f32, &str); 4] = [
+            (0.0, "Off"),
+            (5.0, "5s"),
+            (10.0, "10s"),
+            (30.0, "30s"),
+        ];
 
         v_flex()
             .size_full()
-            .p_4()
-            .gap_4()
-            .bg(rgb(0x1e1e1e))
-            .text_color(rgb(0xffffff))
-            // Process selector section
+            .bg(colors::bg_secondary())
+            .text_color(colors::text_primary())
+            // Header with logo
+            .child(self.render_header())
+            // Main content
             .child(
                 v_flex()
-                    .gap_2()
-                    .child(div().text_sm().child("Select Application:"))
+                    .flex_1()
+                    .gap_0()
+                    // Source Selection Card
+                    .child(self.render_source_card(cx))
+                    // Output File Card
+                    .child(self.render_output_card(cx))
+                    // Pre-roll Toggle Row
+                    .child(
+                        h_flex()
+                            .px_4()
+                            .py_3()
+                            .items_center()
+                            .justify_between()
+                            .border_b_1()
+                            .border_color(colors::border())
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(colors::text_secondary())
+                                    .child("Pre-roll buffer"),
+                            )
+                            .child(
+                                h_flex()
+                                    .gap_1()
+                                    .p_1()
+                                    .bg(colors::bg_tertiary())
+                                    .rounded_md()
+                                    .children(pre_roll_options.iter().enumerate().map(|(idx, (value, label))| {
+                                        let is_active = (self.pre_roll_seconds - *value).abs() < 0.1;
+                                        let value = *value;
+                                        let is_disabled = self.is_recording || self.is_monitoring;
+
+                                        div()
+                                            .id(ElementId::Name(format!("preroll_{}", idx).into()))
+                                            .px_2()
+                                            .py_1()
+                                            .rounded(px(6.0))
+                                            .text_xs()
+                                            .cursor_pointer()
+                                            .when(is_active, |this| {
+                                                this.bg(colors::bg_secondary())
+                                                    .text_color(colors::accent())
+                                            })
+                                            .when(!is_active, |this| {
+                                                this.text_color(colors::text_muted())
+                                            })
+                                            .when(is_disabled, |this| {
+                                                this.opacity(0.5)
+                                                    .cursor_not_allowed()
+                                            })
+                                            .when(!is_disabled, |this| {
+                                                this.on_mouse_down(
+                                                    gpui::MouseButton::Left,
+                                                    cx.listener(move |this, _, _window, cx| {
+                                                        // Stop monitoring if turning off pre-roll
+                                                        if value == 0.0 && this.is_monitoring {
+                                                            this.stop_monitoring(cx);
+                                                        }
+                                                        this.pre_roll_seconds = value;
+                                                        // Start monitoring if selecting a process with pre-roll enabled
+                                                        if value > 0.0 {
+                                                            if let Some(process) = this.selected_process.clone() {
+                                                                this.start_monitoring(&process, cx);
+                                                            }
+                                                        }
+                                                        cx.notify();
+                                                    }),
+                                                )
+                                            })
+                                            .child(*label)
+                                    })),
+                            ),
+                    )
+                    // Record Button
                     .child(
                         div()
+                            .px_4()
+                            .py_3()
+                            .child(
+                                div()
+                                    .id("record-button")
+                                    .w_full()
+                                    .py_3()
+                                    .rounded(px(10.0))
+                                    .text_sm()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .gap_2()
+                                    .when(self.is_recording, |this| {
+                                        this.bg(colors::recording())
+                                            .text_color(rgb(0xffffff))
+                                    })
+                                    .when(!self.is_recording && can_record, |this| {
+                                        this.bg(colors::recording())
+                                            .text_color(rgb(0xffffff))
+                                    })
+                                    .when(!self.is_recording && !can_record, |this| {
+                                        this.bg(colors::recording())
+                                            .text_color(rgb(0xffffff))
+                                            .opacity(0.4)
+                                            .cursor_not_allowed()
+                                    })
+                                    .when(can_record || self.is_recording, |this| {
+                                        this.on_mouse_down(
+                                            gpui::MouseButton::Left,
+                                            cx.listener(|this, _, window, cx| {
+                                                this.toggle_recording(window, cx);
+                                            }),
+                                        )
+                                    })
+                                    // Record icon (circle)
+                                    .child(
+                                        div()
+                                            .size(px(12.0))
+                                            .rounded_full()
+                                            .bg(rgb(0xffffff)),
+                                    )
+                                    .child(record_button_label),
+                            ),
+                    )
+                    // Stats Row (shown during/after recording)
+                    .when(self.is_recording || self.is_monitoring || self.waveform_data.is_some(), |this| {
+                        this.child(self.render_stats_row())
+                    })
+                    // Waveform Section (shown after recording)
+                    .when_some(self.waveform_data.clone(), |this, data| {
+                        this.child(self.render_waveform_section(data, cx))
+                    })
+                    .when(self.waveform_loading, |this| {
+                        this.child(
+                            div()
+                                .px_4()
+                                .py_2()
+                                .text_sm()
+                                .text_color(colors::text_muted())
+                                .child("Loading waveform..."),
+                        )
+                    })
+                    // Error message
+                    .when_some(self.error_message.clone(), |this, msg| {
+                        this.child(
+                            div()
+                                .mx_4()
+                                .my_2()
+                                .p_2()
+                                .bg(colors::error_bg())
+                                .rounded_md()
+                                .text_sm()
+                                .text_color(colors::error_text())
+                                .child(msg),
+                        )
+                    }),
+            )
+            .into_any_element()
+    }
+}
+
+impl AppState {
+    /// Render the header with logo and app name
+    fn render_header(&self) -> impl IntoElement {
+        h_flex()
+            .w_full()
+            .pl(px(80.0))  // Left padding for macOS traffic lights
+            .pr_4()
+            .py_3()
+            .items_center()
+            .gap_2()
+            .border_b_1()
+            .border_color(colors::border())
+            .child(self.render_logo())
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Aresampler"),
+            )
+    }
+
+    /// Render the logo icon (cyan gradient box with audio icon)
+    fn render_logo(&self) -> impl IntoElement {
+        div()
+            .size(px(22.0))
+            .rounded(px(6.0))
+            .bg(colors::accent())
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                // Simple audio bars icon using divs
+                h_flex()
+                    .gap(px(1.0))
+                    .child(div().w(px(2.0)).h(px(6.0)).rounded(px(1.0)).bg(colors::bg_primary()))
+                    .child(div().w(px(2.0)).h(px(10.0)).rounded(px(1.0)).bg(colors::bg_primary()))
+                    .child(div().w(px(2.0)).h(px(6.0)).rounded(px(1.0)).bg(colors::bg_primary())),
+            )
+    }
+
+    /// Render the source (application) selection card
+    fn render_source_card(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let has_selection = self.selected_process.is_some();
+
+        div()
+            .px_4()
+            .py_3()
+            .border_b_1()
+            .border_color(colors::border())
+            .child(
+                // Container with relative positioning for the overlay
+                div()
+                    .relative()
+                    .w_full()
+                    .child(
+                        // Custom styled card (visual only)
+                        div()
+                            .w_full()
+                            .px_3()
+                            .py_2()
+                            .rounded(px(10.0))
+                            .when(has_selection, |this| {
+                                this.bg(colors::bg_tertiary())
+                            })
+                            .when(!has_selection, |this| {
+                                this.border_1()
+                                    .border_color(colors::border())
+                            })
+                            .child(
+                                h_flex()
+                                    .gap_3()
+                                    .items_center()
+                                    // Icon
+                                    .child(
+                                        if let Some(process) = &self.selected_process {
+                                            if let Some(icon) = &process.icon {
+                                                div()
+                                                    .size(px(28.0))
+                                                    .rounded(px(6.0))
+                                                    .overflow_hidden()
+                                                    .child(
+                                                        img(ImageSource::Render(icon.clone()))
+                                                            .size(px(28.0)),
+                                                    )
+                                                    .into_any_element()
+                                            } else {
+                                                self.render_placeholder_icon().into_any_element()
+                                            }
+                                        } else {
+                                            self.render_placeholder_icon().into_any_element()
+                                        },
+                                    )
+                                    // Text content
+                                    .child(
+                                        v_flex()
+                                            .flex_1()
+                                            .gap(px(2.0))
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(colors::text_muted())
+                                                    .child("RECORDING FROM"),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_sm()
+                                                    .font_weight(FontWeight::MEDIUM)
+                                                    .when(!has_selection, |this| {
+                                                        this.text_color(colors::text_muted())
+                                                    })
+                                                    .child(
+                                                        self.selected_process
+                                                            .as_ref()
+                                                            .map(|p| p.name.clone())
+                                                            .unwrap_or_else(|| "Select application...".to_string()),
+                                                    ),
+                                            ),
+                                    )
+                                    // Chevron
+                                    .child(
+                                        div()
+                                            .text_color(colors::text_muted())
+                                            .child("▼"),
+                                    ),
+                            ),
+                    )
+                    // Invisible Select overlay (handles click and dropdown)
+                    .child(
+                        div()
+                            .id("source-select-overlay")
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .w_full()
+                            .h_full()
+                            .cursor_pointer()
                             .on_mouse_down(
                                 gpui::MouseButton::Left,
                                 cx.listener(|this, _, window, cx| {
+                                    // Refresh processes before the dropdown opens
                                     this.refresh_processes(window, cx);
                                 }),
                             )
                             .child(
                                 Select::new(&self.select_state)
                                     .w_full()
-                                    .placeholder("Select an application..."),
+                                    .h_full()
+                                    .appearance(false)
+                                    .opacity(0.0)
+                                    .placeholder("Select application..."),
                             ),
                     ),
             )
-            // Output file section
+    }
+
+    /// Render a placeholder icon for empty selection
+    fn render_placeholder_icon(&self) -> impl IntoElement {
+        div()
+            .size(px(28.0))
+            .rounded(px(6.0))
+            .bg(colors::bg_tertiary())
+            .border_1()
+            .border_color(colors::border())
+            .flex()
+            .items_center()
+            .justify_center()
             .child(
-                v_flex()
-                    .gap_2()
-                    .child(div().text_sm().child("Output File:"))
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .px_2()
-                                    .py_1()
-                                    .bg(rgb(0x2d2d2d))
-                                    .rounded_md()
-                                    .text_sm()
-                                    .child(output_display),
-                            )
-                            .child(
-                                Button::new("browse")
-                                    .label("Browse...")
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.browse_output(window, cx);
-                                    })),
-                            ),
-                    ),
+                div()
+                    .size(px(14.0))
+                    .rounded(px(3.0))
+                    .border_1()
+                    .border_color(colors::text_muted()),
             )
-            // Pre-roll duration control
+    }
+
+    /// Render the output file selection card
+    fn render_output_card(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let has_output = self.output_path.is_some();
+        let output_name = self
+            .output_path
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "Choose destination...".to_string());
+
+        div()
+            .px_4()
+            .py_3()
+            .border_b_1()
+            .border_color(colors::border())
             .child(
-                v_flex()
-                    .gap_2()
-                    .child(div().text_sm().child("Pre-roll Buffer (seconds):"))
+                div()
+                    .id("output-card")
+                    .w_full()
+                    .px_3()
+                    .py_2()
+                    .rounded(px(10.0))
+                    .cursor_pointer()
+                    .when(has_output, |this| {
+                        this.bg(colors::bg_tertiary())
+                    })
+                    .when(!has_output, |this| {
+                        this.border_1()
+                            .border_color(colors::border())
+                    })
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _, window, cx| {
+                            this.browse_output(window, cx);
+                        }),
+                    )
                     .child(
                         h_flex()
-                            .gap_2()
+                            .gap_3()
                             .items_center()
+                            // File icon
+                            .child(self.render_file_icon(has_output))
+                            // Text content
                             .child(
-                                Button::new("pre_roll_minus")
-                                    .label("-")
-                                    .disabled(self.pre_roll_seconds <= 0.0 || self.is_recording || self.is_monitoring)
-                                    .on_click(cx.listener(|this, _, _window, cx| {
-                                        this.pre_roll_seconds = (this.pre_roll_seconds - 1.0).max(0.0);
-                                        cx.notify();
-                                    })),
+                                v_flex()
+                                    .flex_1()
+                                    .gap(px(2.0))
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(colors::text_muted())
+                                            .child("SAVE TO"),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .when(!has_output, |this| {
+                                                this.text_color(colors::text_muted())
+                                            })
+                                            .child(output_name),
+                                    ),
                             )
+                            // Chevron
                             .child(
                                 div()
-                                    .px_3()
-                                    .py_1()
-                                    .bg(rgb(0x2d2d2d))
-                                    .rounded_md()
-                                    .text_sm()
-                                    .min_w(px(60.0))
-                                    .justify_center()
-                                    .child(format!("{:.0}s", self.pre_roll_seconds)),
-                            )
-                            .child(
-                                Button::new("pre_roll_plus")
-                                    .label("+")
-                                    .disabled(self.pre_roll_seconds >= 30.0 || self.is_recording || self.is_monitoring)
-                                    .on_click(cx.listener(|this, _, _window, cx| {
-                                        this.pre_roll_seconds = (this.pre_roll_seconds + 1.0).min(30.0);
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                Button::new("pre_roll_off")
-                                    .label("Off")
-                                    .disabled(self.pre_roll_seconds == 0.0 || self.is_recording || self.is_monitoring)
-                                    .on_click(cx.listener(|this, _, _window, cx| {
-                                        // Stop monitoring if active
-                                        if this.is_monitoring {
-                                            this.stop_monitoring(cx);
-                                        }
-                                        this.pre_roll_seconds = 0.0;
-                                        cx.notify();
-                                    })),
+                                    .text_color(colors::text_muted())
+                                    .child("▼"),
                             ),
                     ),
             )
-            // Record button
+    }
+
+    /// Render the file icon (purple gradient when selected, gray when empty)
+    fn render_file_icon(&self, has_output: bool) -> impl IntoElement {
+        div()
+            .size(px(28.0))
+            .rounded(px(6.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .when(has_output, |this| {
+                this.bg(colors::file_icon())
+            })
+            .when(!has_output, |this| {
+                this.bg(colors::bg_tertiary())
+            })
             .child(
-                Button::new("record")
-                    .label(record_button_label)
-                    .primary()
-                    .disabled(!can_record && !self.is_recording)
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.toggle_recording(window, cx);
-                    })),
+                div()
+                    .text_xs()
+                    .text_color(if has_output { rgb(0xffffff) } else { colors::text_muted() })
+                    .child("📄"),
             )
-            // Stats display
+    }
+
+    /// Render the horizontal stats row
+    fn render_stats_row(&self) -> impl IntoElement {
+        let duration = format!("{:.1}s", self.stats.duration_secs);
+        let size = format!("{:.1} MB", self.stats.file_size_bytes as f64 / (1024.0 * 1024.0));
+        // Average the left and right RMS for a single level display
+        let level = (self.stats.left_rms_db + self.stats.right_rms_db) / 2.0;
+        let level_str = format!("{:.0} dB", level);
+
+        h_flex()
+            .px_4()
+            .py_3()
+            .gap_2()
+            .border_b_1()
+            .border_color(colors::border())
+            // Duration stat
             .child(
                 v_flex()
-                    .gap_1()
-                    .p_3()
-                    .bg(rgb(0x2d2d2d))
+                    .flex_1()
+                    .items_center()
+                    .p_2()
+                    .bg(colors::bg_tertiary())
                     .rounded_md()
                     .child(
                         div()
                             .text_sm()
-                            .text_color(rgb(0x888888))
-                            .child(stats_title),
-                    )
-                    .when(self.is_monitoring, |this| {
-                        this.child(
-                            div()
-                                .text_sm()
-                                .child(format!(
-                                    "Buffer: {:.1}s / {:.1}s",
-                                    self.stats.pre_roll_buffer_secs, self.pre_roll_seconds
-                                )),
-                        )
-                    })
-                    .when(self.is_recording || !self.is_monitoring, |this| {
-                        this.child(
-                            div()
-                                .text_sm()
-                                .child(format!("Duration: {:.1}s", self.stats.duration_secs)),
-                        )
-                        .child(
-                            div()
-                                .text_sm()
-                                .child(format!("Frames: {}", self.stats.total_frames)),
-                        )
-                        .child(div().text_sm().child(format!(
-                            "Size: {:.2} MB",
-                            self.stats.file_size_bytes as f64 / (1024.0 * 1024.0)
-                        )))
-                    })
-                    .child(
-                        div()
-                            .text_sm()
-                            .child(format!("Left: {:.1} dB", self.stats.left_rms_db)),
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(duration),
                     )
                     .child(
                         div()
-                            .text_sm()
-                            .child(format!("Right: {:.1} dB", self.stats.right_rms_db)),
+                            .text_xs()
+                            .text_color(colors::text_muted())
+                            .child("Duration"),
                     ),
             )
-            // Waveform display (show after recording completes)
-            .when_some(self.waveform_data.clone(), |this, data| {
-                let trim_selection = self.trim_selection.clone();
-                let play_label = if self.is_playing { "Stop" } else { "Play" };
-                let is_modified = self.trim_selection.is_modified();
+            // Size stat
+            .child(
+                v_flex()
+                    .flex_1()
+                    .items_center()
+                    .p_2()
+                    .bg(colors::bg_tertiary())
+                    .rounded_md()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(size),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(colors::text_muted())
+                            .child("Size"),
+                    ),
+            )
+            // Level stat
+            .child(
+                v_flex()
+                    .flex_1()
+                    .items_center()
+                    .p_2()
+                    .bg(colors::bg_tertiary())
+                    .rounded_md()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(colors::success())
+                            .child(level_str),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(colors::text_muted())
+                            .child("Level"),
+                    ),
+            )
+    }
 
-                this.child(
-                    v_flex()
-                        .gap_2()
-                        .child(div().text_sm().child("Waveform:"))
-                        .child(
-                            div()
-                                .id("waveform-container")
-                                .h(px(100.0))
-                                .w_full()
-                                .rounded_md()
-                                .overflow_hidden()
-                                .cursor(CursorStyle::ResizeLeftRight)
-                                .on_mouse_down(
-                                    gpui::MouseButton::Left,
-                                    cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                                        // Compute bounds from viewport size and known padding
-                                        // The waveform container is inside a v_flex with p_4 (16px)
-                                        let viewport = window.viewport_size();
-                                        let padding: f32 = 16.0;
-                                        let viewport_width: f32 = viewport.width.into();
-                                        let waveform_width = viewport_width - (padding * 2.0);
-                                        // We don't know exact Y position, but we only need X for horizontal dragging
-                                        // Use mouse Y position as approximate origin Y
-                                        let bounds = Bounds {
-                                            origin: point(px(padding), event.position.y - px(50.0)), // Approximate
-                                            size: Size {
-                                                width: px(waveform_width),
-                                                height: px(100.0),
-                                            },
-                                        };
-                                        this.waveform_bounds = Some(bounds);
-                                        this.handle_waveform_mouse_down(event.position, cx);
-                                    }),
-                                )
-                                .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
-                                    this.handle_waveform_mouse_move(event.position, cx);
-                                }))
-                                .on_mouse_up(
-                                    gpui::MouseButton::Left,
-                                    cx.listener(|this, _, _window, cx| {
-                                        this.handle_waveform_mouse_up(cx);
-                                    }),
-                                )
-                                .child(
-                                    WaveformView::new(data)
-                                        .with_trim_selection(trim_selection)
-                                        .render(),
-                                ),
-                        )
-                        // Play/Cut buttons below waveform
-                        .child(
-                            h_flex()
-                                .gap_2()
-                                .child(
-                                    Button::new("play_preview")
-                                        .label(play_label)
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.toggle_playback(window, cx);
-                                        })),
-                                )
-                                .when(is_modified, |this| {
-                                    this.child(
-                                        Button::new("cut_audio")
-                                            .label("Cut")
-                                            .primary()
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.cut_audio(window, cx);
-                                            })),
-                                    )
+    /// Render the waveform section with time display and controls
+    fn render_waveform_section(
+        &self,
+        data: Arc<WaveformData>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let trim_selection = self.trim_selection.clone();
+        let is_modified = self.trim_selection.is_modified();
+        let duration = data.duration_secs;
+
+        // Calculate times based on trim selection
+        let start_time = format!("{}:{:02}", (duration * self.trim_selection.start as f64) as u32 / 60,
+            (duration * self.trim_selection.start as f64) as u32 % 60);
+        let current_time = format!("{}:{:02}", (duration * 0.75) as u32 / 60, (duration * 0.75) as u32 % 60);
+        let end_time = format!("{}:{:02}", (duration * self.trim_selection.end as f64) as u32 / 60,
+            (duration * self.trim_selection.end as f64) as u32 % 60);
+
+        v_flex()
+            .px_4()
+            .py_3()
+            .gap_3()
+            // Waveform container
+            .child(
+                div()
+                    .id("waveform-container")
+                    .h(px(80.0))
+                    .w_full()
+                    .rounded(px(10.0))
+                    .overflow_hidden()
+                    .cursor(CursorStyle::ResizeLeftRight)
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                            let viewport = window.viewport_size();
+                            let padding: f32 = 16.0;
+                            let viewport_width: f32 = viewport.width.into();
+                            let waveform_width = viewport_width - (padding * 2.0);
+                            let bounds = Bounds {
+                                origin: point(px(padding), event.position.y - px(40.0)),
+                                size: Size {
+                                    width: px(waveform_width),
+                                    height: px(80.0),
+                                },
+                            };
+                            this.waveform_bounds = Some(bounds);
+                            this.handle_waveform_mouse_down(event.position, cx);
+                        }),
+                    )
+                    .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
+                        this.handle_waveform_mouse_move(event.position, cx);
+                    }))
+                    .on_mouse_up(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _, _window, cx| {
+                            this.handle_waveform_mouse_up(cx);
+                        }),
+                    )
+                    .child(
+                        WaveformView::new(data)
+                            .with_trim_selection(trim_selection)
+                            .render(),
+                    ),
+            )
+            // Time display row
+            .child(
+                h_flex()
+                    .justify_between()
+                    .text_xs()
+                    .text_color(colors::text_muted())
+                    .child(start_time)
+                    .child(
+                        div()
+                            .text_color(colors::accent())
+                            .child(current_time),
+                    )
+                    .child(end_time),
+            )
+            // Control buttons
+            .child(
+                h_flex()
+                    .gap_2()
+                    // Play button (icon only)
+                    .child(
+                        div()
+                            .id("play-button")
+                            .size(px(44.0))
+                            .rounded(px(10.0))
+                            .bg(colors::bg_tertiary())
+                            .border_1()
+                            .border_color(colors::border())
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(|this, _, window, cx| {
+                                    this.toggle_playback(window, cx);
                                 }),
-                        ),
-                )
-            })
-            .when(self.waveform_loading, |this| {
-                this.child(
-                    div()
-                        .p_2()
-                        .text_sm()
-                        .text_color(rgb(0x888888))
-                        .child("Loading waveform..."),
-                )
-            })
-            // Error message
-            .when_some(self.error_message.clone(), |this, msg| {
-                this.child(
-                    div()
-                        .p_2()
-                        .bg(rgb(0x5c1a1a))
-                        .rounded_md()
-                        .text_sm()
-                        .text_color(rgb(0xff6b6b))
-                        .child(msg),
-                )
-            })
-            .into_any_element()
+                            )
+                            .child(
+                                div()
+                                    .text_color(colors::text_secondary())
+                                    .child(if self.is_playing { "⏹" } else { "▶" }),
+                            ),
+                    )
+                    // Cut Selection button
+                    .child(
+                        div()
+                            .id("cut-button")
+                            .flex_1()
+                            .py_3()
+                            .rounded(px(10.0))
+                            .bg(colors::bg_tertiary())
+                            .border_1()
+                            .border_color(colors::border())
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .text_sm()
+                            .text_color(colors::text_secondary())
+                            .when(!is_modified, |this| {
+                                this.opacity(0.5)
+                                    .cursor_not_allowed()
+                            })
+                            .when(is_modified, |this| {
+                                this.on_mouse_down(
+                                    gpui::MouseButton::Left,
+                                    cx.listener(|this, _, window, cx| {
+                                        this.cut_audio(window, cx);
+                                    }),
+                                )
+                            })
+                            .child("Cut Selection"),
+                    ),
+            )
     }
 }

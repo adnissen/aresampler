@@ -19,13 +19,17 @@ fn main() -> Result<()> {
             window_bounds: Some(WindowBounds::Windowed(Bounds {
                 origin: Point::default(),
                 size: Size {
-                    width: px(450.0),
-                    height: px(400.0),
+                    width: px(320.0),
+                    height: px(550.0),
                 },
             })),
             titlebar: Some(TitlebarOptions {
-                title: Some("Aresampler".into()),
-                ..Default::default()
+                title: None, // Empty title - we show our own header
+                appears_transparent: true,
+                traffic_light_position: Some(Point {
+                    x: px(9.0),
+                    y: px(9.0),
+                }),
             }),
             ..Default::default()
         };

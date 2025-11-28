@@ -202,15 +202,18 @@ pub struct WaveformView {
 
 impl WaveformView {
     pub fn new(data: Arc<WaveformData>) -> Self {
+        // Colors matching the new theme
+        // Accent: 0x22d3ee (cyan) -> hsla(0.52, 0.82, 0.54, 1.0)
+        // BG_PRIMARY: 0x0a0a0b -> hsla(0.0, 0.0, 0.04, 1.0)
         Self {
             data,
-            color: hsla(0.55, 0.7, 0.5, 1.0),      // Cyan-ish blue
+            color: hsla(0.52, 0.82, 0.54, 1.0),      // Accent cyan
             line_width: 1.5,
-            background: hsla(0.0, 0.0, 0.12, 1.0), // Dark gray
-            vertical_padding: 0.1,                  // 10% padding top and bottom
+            background: hsla(0.0, 0.0, 0.04, 1.0),   // BG_PRIMARY dark
+            vertical_padding: 0.1,                    // 10% padding top and bottom
             trim_selection: None,
-            dimmed_color: hsla(0.0, 0.0, 0.0, 0.6),    // Semi-transparent black overlay
-            handle_color: hsla(0.55, 0.9, 0.7, 1.0),   // Bright cyan accent
+            dimmed_color: hsla(0.0, 0.0, 0.0, 0.6),  // Semi-transparent black overlay
+            handle_color: hsla(0.52, 0.82, 0.54, 1.0), // Accent cyan for handles
             handle_width: 4.0,
         }
     }
