@@ -1,39 +1,68 @@
 //! Windows audio capture implementation using WASAPI
 
 use crate::process::process_exists;
-use crate::types::{CaptureCommand, CaptureConfig, CaptureEvent, CaptureStats};
+use crate::ring_buffer::AudioRingBuffer;
+use crate::types::{CaptureCommand, CaptureConfig, CaptureEvent, CaptureStats, MonitorConfig};
 use anyhow::{anyhow, Context, Result};
 use hound::{SampleFormat, WavSpec, WavWriter};
 use std::collections::VecDeque;
 use std::io::BufWriter;
+use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use wasapi::{AudioClient, Direction, SampleType, StreamMode, WaveFormat};
 
+/// Capture mode for the session
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CaptureMode {
+    /// Capturing to ring buffer only (pre-recording)
+    Monitoring,
+    /// Capturing to WAV file
+    Recording,
+}
+
 /// Manages an audio capture session on Windows
 pub struct CaptureSession {
-    config: CaptureConfig,
+    config: Option<CaptureConfig>,
+    monitor_config: Option<MonitorConfig>,
     command_tx: Option<Sender<CaptureCommand>>,
     thread_handle: Option<JoinHandle<()>>,
+    is_monitoring: bool,
 }
 
 impl CaptureSession {
     pub fn new(config: CaptureConfig) -> Self {
         Self {
-            config,
+            config: Some(config),
+            monitor_config: None,
             command_tx: None,
             thread_handle: None,
+            is_monitoring: false,
         }
     }
 
-    /// Start capture in a background thread
+    /// Create a session without an initial config (for monitoring-first usage)
+    pub fn new_empty() -> Self {
+        Self {
+            config: None,
+            monitor_config: None,
+            command_tx: None,
+            thread_handle: None,
+            is_monitoring: false,
+        }
+    }
+
+    /// Start capture in a background thread (direct recording mode)
     /// Returns a receiver for capture events
     pub fn start(&mut self) -> Result<Receiver<CaptureEvent>> {
+        let config = self
+            .config
+            .clone()
+            .ok_or_else(|| anyhow!("No capture config set"))?;
+
         let (event_tx, event_rx) = channel();
         let (command_tx, command_rx) = channel();
-
-        let config = self.config.clone();
 
         let handle = thread::spawn(move || {
             capture_thread_main(config, command_rx, event_tx);
@@ -41,11 +70,52 @@ impl CaptureSession {
 
         self.command_tx = Some(command_tx);
         self.thread_handle = Some(handle);
+        self.is_monitoring = false;
 
         Ok(event_rx)
     }
 
-    /// Stop the capture
+    /// Start monitoring mode - captures audio to ring buffer without recording to file
+    /// Returns a receiver for capture events (StatsUpdate with level meters)
+    pub fn start_monitoring(&mut self, config: MonitorConfig) -> Result<Receiver<CaptureEvent>> {
+        // Stop any existing session
+        self.stop()?;
+
+        let (event_tx, event_rx) = channel();
+        let (command_tx, command_rx) = channel();
+
+        let monitor_config = config.clone();
+        self.monitor_config = Some(config);
+
+        let handle = thread::spawn(move || {
+            monitor_thread_main(monitor_config, command_rx, event_tx);
+        });
+
+        self.command_tx = Some(command_tx);
+        self.thread_handle = Some(handle);
+        self.is_monitoring = true;
+
+        Ok(event_rx)
+    }
+
+    /// Transition from monitoring to recording mode
+    /// The ring buffer contents are written to the beginning of the file
+    pub fn start_recording(&mut self, output_path: PathBuf) -> Result<()> {
+        if !self.is_monitoring {
+            return Err(anyhow!("Not in monitoring mode"));
+        }
+
+        if let Some(tx) = &self.command_tx {
+            tx.send(CaptureCommand::StartRecording { output_path })
+                .map_err(|_| anyhow!("Failed to send start recording command"))?;
+            self.is_monitoring = false;
+            Ok(())
+        } else {
+            Err(anyhow!("No active monitoring session"))
+        }
+    }
+
+    /// Stop the capture or monitoring
     pub fn stop(&mut self) -> Result<()> {
         if let Some(tx) = self.command_tx.take() {
             let _ = tx.send(CaptureCommand::Stop);
@@ -53,12 +123,18 @@ impl CaptureSession {
         if let Some(handle) = self.thread_handle.take() {
             let _ = handle.join();
         }
+        self.is_monitoring = false;
         Ok(())
     }
 
-    /// Check if currently recording
+    /// Check if currently recording to file
     pub fn is_recording(&self) -> bool {
-        self.command_tx.is_some()
+        self.command_tx.is_some() && !self.is_monitoring
+    }
+
+    /// Check if currently in monitoring mode
+    pub fn is_monitoring(&self) -> bool {
+        self.command_tx.is_some() && self.is_monitoring
     }
 }
 
@@ -177,9 +253,13 @@ fn run_capture(
 
     // Main capture loop
     loop {
-        // Check for stop command (non-blocking)
-        if let Ok(CaptureCommand::Stop) = command_rx.try_recv() {
-            break;
+        // Check for commands (non-blocking)
+        match command_rx.try_recv() {
+            Ok(CaptureCommand::Stop) => break,
+            Ok(CaptureCommand::StartRecording { .. }) => {
+                // Ignored in direct capture mode - already recording
+            }
+            Err(_) => {}
         }
 
         // Wait for audio data (timeout 100ms)
@@ -242,6 +322,8 @@ fn run_capture(
                         file_size_bytes: total_bytes,
                         buffer_frames: current_buffer_frames,
                         is_recording: true,
+                        is_monitoring: false,
+                        pre_roll_buffer_secs: 0.0,
                         left_rms_db,
                         right_rms_db,
                     };
@@ -266,6 +348,267 @@ fn run_capture(
 
     // Finalize the WAV file
     wav_writer.finalize().context("Failed to finalize WAV file")?;
+
+    Ok(())
+}
+
+/// Main entry point for monitoring thread
+fn monitor_thread_main(
+    config: MonitorConfig,
+    command_rx: Receiver<CaptureCommand>,
+    event_tx: Sender<CaptureEvent>,
+) {
+    // Initialize COM in this thread
+    let hr = wasapi::initialize_mta();
+    if hr.is_err() {
+        let _ = event_tx.send(CaptureEvent::Error(format!(
+            "Failed to initialize COM: HRESULT {:#x}",
+            hr.0
+        )));
+        return;
+    }
+
+    if let Err(e) = run_monitor(&config, &command_rx, &event_tx) {
+        let _ = event_tx.send(CaptureEvent::Error(e.to_string()));
+    }
+
+    let _ = event_tx.send(CaptureEvent::Stopped);
+}
+
+/// Run monitoring mode - captures to ring buffer, can transition to recording
+fn run_monitor(
+    config: &MonitorConfig,
+    command_rx: &Receiver<CaptureCommand>,
+    event_tx: &Sender<CaptureEvent>,
+) -> Result<()> {
+    // Validate that the process exists
+    if !process_exists(config.pid) {
+        return Err(anyhow!("Process with PID {} does not exist", config.pid));
+    }
+
+    // Create application loopback client
+    let mut audio_client = AudioClient::new_application_loopback_client(config.pid, true)
+        .map_err(|e| {
+            anyhow!(
+                "Failed to create application loopback client: {}. Make sure the PID is valid.",
+                e
+            )
+        })?;
+
+    // Define the desired audio format
+    let bits_per_sample = 32u16;
+    let block_align = (config.channels * bits_per_sample / 8) as u16;
+
+    let desired_format = WaveFormat::new(
+        bits_per_sample as usize,
+        bits_per_sample as usize,
+        &SampleType::Float,
+        config.sample_rate as usize,
+        config.channels as usize,
+        None,
+    );
+
+    // Initialize the audio client
+    let buffer_duration_hns = 2_000_000i64; // 200ms
+    let mode = StreamMode::EventsShared {
+        autoconvert: true,
+        buffer_duration_hns,
+    };
+
+    audio_client
+        .initialize_client(&desired_format, &Direction::Capture, &mode)
+        .map_err(|e| anyhow!("Failed to initialize audio client: {}", e))?;
+
+    // Get event handle
+    let event_handle = audio_client
+        .set_get_eventhandle()
+        .map_err(|e| anyhow!("Failed to get event handle: {}", e))?;
+
+    // Get capture client
+    let capture_client = audio_client
+        .get_audiocaptureclient()
+        .map_err(|e| anyhow!("Failed to get audio capture client: {}", e))?;
+
+    // Create ring buffer for pre-roll
+    let mut ring_buffer = AudioRingBuffer::new(
+        config.pre_roll_duration_secs,
+        config.sample_rate,
+        config.channels,
+    );
+
+    // WAV spec for when we transition to recording
+    let wav_spec = WavSpec {
+        channels: config.channels,
+        sample_rate: config.sample_rate,
+        bits_per_sample: 32,
+        sample_format: SampleFormat::Float,
+    };
+
+    // Start the stream
+    audio_client
+        .start_stream()
+        .map_err(|e| anyhow!("Failed to start audio stream: {}", e))?;
+
+    // Notify that monitoring has started
+    let _ = event_tx.send(CaptureEvent::MonitoringStarted);
+
+    let start_time = Instant::now();
+    let mut last_status_update = Instant::now();
+    let mut audio_buffer: VecDeque<u8> = VecDeque::new();
+    let mut mode = CaptureMode::Monitoring;
+    let mut wav_writer: Option<WavWriter<BufWriter<std::fs::File>>> = None;
+    let mut total_frames: u64 = 0;
+    let mut total_bytes: u64 = 0;
+    let mut recording_start_time: Option<Instant> = None;
+
+    // Main capture loop
+    loop {
+        // Check for commands (non-blocking)
+        match command_rx.try_recv() {
+            Ok(CaptureCommand::Stop) => break,
+            Ok(CaptureCommand::StartRecording { output_path }) => {
+                // Transition to recording mode
+                let file = std::fs::File::create(&output_path).with_context(|| {
+                    format!("Failed to create output file: {}", output_path.display())
+                })?;
+                let buf_writer = BufWriter::new(file);
+                let mut writer =
+                    WavWriter::new(buf_writer, wav_spec).context("Failed to create WAV writer")?;
+
+                // Drain ring buffer and write to WAV
+                let pre_roll_secs = ring_buffer.duration_secs();
+                let samples = ring_buffer.drain();
+                for sample in samples {
+                    writer.write_sample(sample)?;
+                }
+
+                wav_writer = Some(writer);
+                mode = CaptureMode::Recording;
+                recording_start_time = Some(Instant::now());
+                total_frames = 0;
+                total_bytes = 0;
+
+                let _ = event_tx.send(CaptureEvent::RecordingStarted { pre_roll_secs });
+            }
+            Err(_) => {}
+        }
+
+        // Wait for audio data (timeout 100ms)
+        if event_handle.wait_for_event(100).is_err() {
+            continue;
+        }
+
+        // Check how many frames are available
+        let frames_available = match capture_client.get_next_packet_size() {
+            Ok(Some(frames)) => frames,
+            Ok(None) => continue,
+            Err(_) => continue,
+        };
+
+        if frames_available == 0 {
+            continue;
+        }
+
+        // Read available frames
+        audio_buffer.clear();
+        match capture_client.read_from_device_to_deque(&mut audio_buffer) {
+            Ok(_buffer_flags) => {
+                let num_bytes = audio_buffer.len();
+                if num_bytes == 0 {
+                    continue;
+                }
+
+                // Convert bytes to f32 samples
+                let bytes = audio_buffer.make_contiguous();
+                let samples = bytes_to_f32_samples(bytes);
+
+                match mode {
+                    CaptureMode::Monitoring => {
+                        // Push to ring buffer
+                        ring_buffer.push(samples);
+                    }
+                    CaptureMode::Recording => {
+                        // Write to WAV file
+                        if let Some(ref mut writer) = wav_writer {
+                            for &sample in samples {
+                                writer
+                                    .write_sample(sample)
+                                    .context("Failed to write sample to WAV")?;
+                            }
+                        }
+                        let num_frames = num_bytes / block_align as usize;
+                        total_frames += num_frames as u64;
+                        total_bytes += num_bytes as u64;
+                    }
+                }
+
+                let num_frames = num_bytes / block_align as usize;
+
+                // Update status every 100ms
+                if last_status_update.elapsed() >= Duration::from_millis(100) {
+                    let num_channels = config.channels as usize;
+                    let left_samples: Vec<f32> =
+                        samples.iter().step_by(num_channels).copied().collect();
+                    let right_samples: Vec<f32> = if num_channels > 1 {
+                        samples.iter().skip(1).step_by(num_channels).copied().collect()
+                    } else {
+                        left_samples.clone()
+                    };
+                    let left_rms_db = calculate_rms_db(&left_samples);
+                    let right_rms_db = calculate_rms_db(&right_samples);
+
+                    let stats = match mode {
+                        CaptureMode::Monitoring => CaptureStats {
+                            duration_secs: start_time.elapsed().as_secs_f64(),
+                            total_frames: 0,
+                            file_size_bytes: 0,
+                            buffer_frames: num_frames,
+                            is_recording: false,
+                            is_monitoring: true,
+                            pre_roll_buffer_secs: ring_buffer.duration_secs(),
+                            left_rms_db,
+                            right_rms_db,
+                        },
+                        CaptureMode::Recording => {
+                            let duration = recording_start_time
+                                .map(|t| t.elapsed().as_secs_f64())
+                                .unwrap_or(0.0);
+                            CaptureStats {
+                                duration_secs: duration,
+                                total_frames,
+                                file_size_bytes: total_bytes,
+                                buffer_frames: num_frames,
+                                is_recording: true,
+                                is_monitoring: false,
+                                pre_roll_buffer_secs: 0.0,
+                                left_rms_db,
+                                right_rms_db,
+                            }
+                        }
+                    };
+                    let _ = event_tx.send(CaptureEvent::StatsUpdate(stats));
+                    last_status_update = Instant::now();
+                }
+            }
+            Err(e) => {
+                let err_str = format!("{}", e);
+                if err_str.contains("AUDCLNT_S_BUFFER_EMPTY") || err_str.contains("0x08890001") {
+                    continue;
+                }
+                return Err(anyhow!("Error reading audio data: {}", e));
+            }
+        }
+    }
+
+    // Stop the stream
+    audio_client
+        .stop_stream()
+        .map_err(|e| anyhow!("Failed to stop audio stream: {}", e))?;
+
+    // Finalize WAV file if we were recording
+    if let Some(writer) = wav_writer {
+        writer.finalize().context("Failed to finalize WAV file")?;
+    }
 
     Ok(())
 }

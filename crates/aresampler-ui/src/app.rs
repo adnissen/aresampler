@@ -1,6 +1,6 @@
 use aresampler_core::{
     enumerate_audio_sessions, is_capture_available, request_capture_permission, AudioSessionInfo,
-    CaptureConfig, CaptureEvent, CaptureSession, CaptureStats, PermissionStatus,
+    CaptureConfig, CaptureEvent, CaptureSession, CaptureStats, MonitorConfig, PermissionStatus,
 };
 use crate::playback::{load_samples_for_region, AudioPlayer};
 use crate::waveform::{trim_wav_file, DragHandle, TrimSelection, WaveformData, WaveformView};
@@ -135,6 +135,10 @@ pub struct AppState {
     // Output file
     output_path: Option<PathBuf>,
 
+    // Pre-roll / Monitoring state
+    pre_roll_seconds: f32,
+    is_monitoring: bool,
+
     // Recording state
     is_recording: bool,
     stats: CaptureStats,
@@ -197,8 +201,15 @@ impl AppState {
                 if let SelectEvent::Confirm(Some(pid)) = event {
                     // Find the selected process by PID
                     if let Some(process) = this.processes.iter().find(|p| p.pid == *pid) {
-                        this.selected_process = Some(process.clone());
+                        let process_clone = process.clone();
+                        this.selected_process = Some(process_clone.clone());
                         this.error_message = None;
+
+                        // Start monitoring for this process if pre-roll is enabled
+                        if this.pre_roll_seconds > 0.0 {
+                            this.start_monitoring(&process_clone, cx);
+                        }
+
                         cx.notify();
                     }
                 }
@@ -214,6 +225,8 @@ impl AppState {
             selected_process: None,
             icon_cache,
             output_path: None,
+            pre_roll_seconds: 10.0,
+            is_monitoring: false,
             is_recording: false,
             stats: CaptureStats::default(),
             capture_session: None,
@@ -273,6 +286,9 @@ impl AppState {
     }
 
     fn refresh_processes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Stop any active monitoring when refreshing
+        self.stop_monitoring(cx);
+
         // Use the icon cache to avoid re-decoding icons for known processes
         self.processes = enumerate_audio_sessions()
             .unwrap_or_default()
@@ -287,6 +303,42 @@ impl AppState {
         });
 
         self.selected_process = None;
+        cx.notify();
+    }
+
+    fn start_monitoring(&mut self, process: &ProcessItem, cx: &mut Context<Self>) {
+        // Stop any existing monitoring/recording session
+        self.stop_monitoring(cx);
+
+        let config = MonitorConfig {
+            pid: process.pid,
+            pre_roll_duration_secs: self.pre_roll_seconds,
+            ..Default::default()
+        };
+
+        let mut session = CaptureSession::new_empty();
+        match session.start_monitoring(config) {
+            Ok(rx) => {
+                self.event_receiver = Some(rx);
+                self.capture_session = Some(session);
+                self.is_monitoring = true;
+                self.is_recording = false;
+                self.error_message = None;
+                self.stats = CaptureStats::default();
+            }
+            Err(e) => {
+                self.error_message = Some(format!("Failed to start monitoring: {}", e));
+            }
+        }
+        cx.notify();
+    }
+
+    fn stop_monitoring(&mut self, cx: &mut Context<Self>) {
+        if let Some(mut session) = self.capture_session.take() {
+            let _ = session.stop();
+        }
+        self.is_monitoring = false;
+        self.event_receiver = None;
         cx.notify();
     }
 
@@ -316,6 +368,30 @@ impl AppState {
             return;
         };
 
+        // Reset trim selection and waveform for new recording
+        self.trim_selection = TrimSelection::new();
+        self.waveform_data = None;
+
+        // If we're monitoring, transition to recording
+        if self.is_monitoring {
+            if let Some(ref mut session) = self.capture_session {
+                match session.start_recording(path.clone()) {
+                    Ok(()) => {
+                        self.is_monitoring = false;
+                        self.is_recording = true;
+                        self.error_message = None;
+                        cx.notify();
+                    }
+                    Err(e) => {
+                        self.error_message = Some(format!("Failed to start recording: {}", e));
+                        cx.notify();
+                    }
+                }
+            }
+            return;
+        }
+
+        // Direct recording mode (no monitoring)
         let config = CaptureConfig {
             pid: process.pid,
             output_path: path.clone(),
@@ -330,9 +406,6 @@ impl AppState {
                 self.is_recording = true;
                 self.error_message = None;
                 self.stats = CaptureStats::default();
-                // Reset trim selection and waveform for new recording
-                self.trim_selection = TrimSelection::new();
-                self.waveform_data = None;
                 cx.notify();
             }
             Err(e) => {
@@ -350,7 +423,15 @@ impl AppState {
             while let Ok(event) = rx.try_recv() {
                 match event {
                     CaptureEvent::Started { .. } => {
-                        // Recording started successfully
+                        // Recording started successfully (direct mode)
+                    }
+                    CaptureEvent::MonitoringStarted => {
+                        // Monitoring started successfully
+                    }
+                    CaptureEvent::RecordingStarted { pre_roll_secs: _ } => {
+                        // Transitioned from monitoring to recording
+                        self.is_monitoring = false;
+                        self.is_recording = true;
                     }
                     CaptureEvent::StatsUpdate(stats) => {
                         self.stats = stats;
@@ -368,6 +449,7 @@ impl AppState {
 
         if stopped {
             self.is_recording = false;
+            self.is_monitoring = false;
             self.capture_session = None;
             self.event_receiver = None;
             if let Some(msg) = error_msg {
@@ -412,7 +494,7 @@ impl AppState {
 
     fn schedule_next_frame_check(window: &mut Window, cx: &mut Context<Self>) {
         cx.on_next_frame(window, |this, w, cx| {
-            if this.is_recording {
+            if this.is_recording || this.is_monitoring {
                 let now = Instant::now();
                 let should_notify = this
                     .last_render_time
@@ -656,7 +738,7 @@ impl AppState {
 impl Render for AppState {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Poll for capture events during render (simple approach)
-        if self.is_recording {
+        if self.is_recording || self.is_monitoring {
             self.poll_capture_events();
             // Request another frame to continue polling, but only notify every 100ms
             Self::schedule_next_frame_check(window, cx);
@@ -708,13 +790,25 @@ impl Render for AppState {
                 .into_any_element();
         }
 
-        let can_record =
-            self.selected_process.is_some() && self.output_path.is_some() && !self.is_recording;
+        let can_record = self.selected_process.is_some()
+            && self.output_path.is_some()
+            && !self.is_recording;
 
         let record_button_label = if self.is_recording {
             "Stop Recording"
+        } else if self.is_monitoring {
+            "Start Recording"
         } else {
             "Start Recording"
+        };
+
+        // Determine stats title based on state
+        let stats_title = if self.is_monitoring {
+            "Monitoring (Pre-roll Buffer):"
+        } else if self.is_recording {
+            "Recording Stats:"
+        } else {
+            "Stats:"
         };
 
         let output_display = self
@@ -776,6 +870,52 @@ impl Render for AppState {
                             ),
                     ),
             )
+            // Pre-roll duration control
+            .child(
+                v_flex()
+                    .gap_2()
+                    .child(div().text_sm().child("Pre-roll Buffer (seconds):"))
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(
+                                Button::new("pre_roll_minus")
+                                    .label("-")
+                                    .disabled(self.pre_roll_seconds <= 0.0 || self.is_recording || self.is_monitoring)
+                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                        this.pre_roll_seconds = (this.pre_roll_seconds - 1.0).max(0.0);
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .px_3()
+                                    .py_1()
+                                    .bg(rgb(0x2d2d2d))
+                                    .rounded_md()
+                                    .text_sm()
+                                    .min_w(px(60.0))
+                                    .justify_center()
+                                    .child(format!("{:.0}s", self.pre_roll_seconds)),
+                            )
+                            .child(
+                                Button::new("pre_roll_plus")
+                                    .label("+")
+                                    .disabled(self.pre_roll_seconds >= 30.0 || self.is_recording || self.is_monitoring)
+                                    .on_click(cx.listener(|this, _, _window, cx| {
+                                        this.pre_roll_seconds = (this.pre_roll_seconds + 1.0).min(30.0);
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(rgb(0x888888))
+                                    .child("(0 = disabled)"),
+                            ),
+                    ),
+            )
             // Record button
             .child(
                 Button::new("record")
@@ -797,27 +937,34 @@ impl Render for AppState {
                         div()
                             .text_sm()
                             .text_color(rgb(0x888888))
-                            .child("Recording Stats:"),
+                            .child(stats_title),
                     )
-                    .child(
-                        div()
-                            .text_sm()
-                            .child(format!("Duration: {:.1}s", self.stats.duration_secs)),
-                    )
-                    .child(
-                        div()
-                            .text_sm()
-                            .child(format!("Frames: {}", self.stats.total_frames)),
-                    )
-                    .child(div().text_sm().child(format!(
-                        "Size: {:.2} MB",
-                        self.stats.file_size_bytes as f64 / (1024.0 * 1024.0)
-                    )))
-                    .child(
-                        div()
-                            .text_sm()
-                            .child(format!("Buffer: {} frames", self.stats.buffer_frames)),
-                    )
+                    .when(self.is_monitoring, |this| {
+                        this.child(
+                            div()
+                                .text_sm()
+                                .child(format!(
+                                    "Buffer: {:.1}s / {:.1}s",
+                                    self.stats.pre_roll_buffer_secs, self.pre_roll_seconds
+                                )),
+                        )
+                    })
+                    .when(self.is_recording || !self.is_monitoring, |this| {
+                        this.child(
+                            div()
+                                .text_sm()
+                                .child(format!("Duration: {:.1}s", self.stats.duration_secs)),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .child(format!("Frames: {}", self.stats.total_frames)),
+                        )
+                        .child(div().text_sm().child(format!(
+                            "Size: {:.2} MB",
+                            self.stats.file_size_bytes as f64 / (1024.0 * 1024.0)
+                        )))
+                    })
                     .child(
                         div()
                             .text_sm()

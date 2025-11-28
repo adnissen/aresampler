@@ -46,6 +46,27 @@ impl Default for CaptureConfig {
     }
 }
 
+/// Configuration for monitoring mode (pre-recording with ring buffer)
+#[derive(Clone, Debug)]
+pub struct MonitorConfig {
+    pub pid: u32,
+    pub sample_rate: u32,
+    pub channels: u16,
+    /// Pre-roll buffer duration in seconds (0 = no buffering)
+    pub pre_roll_duration_secs: f32,
+}
+
+impl Default for MonitorConfig {
+    fn default() -> Self {
+        Self {
+            pid: 0,
+            sample_rate: 48000,
+            channels: 2,
+            pre_roll_duration_secs: 10.0,
+        }
+    }
+}
+
 /// Real-time statistics during capture
 #[derive(Clone, Debug)]
 pub struct CaptureStats {
@@ -54,6 +75,10 @@ pub struct CaptureStats {
     pub file_size_bytes: u64,
     pub buffer_frames: usize,
     pub is_recording: bool,
+    /// True when in monitoring mode (before recording starts)
+    pub is_monitoring: bool,
+    /// Current pre-roll buffer fill level in seconds
+    pub pre_roll_buffer_secs: f32,
     /// Left channel RMS level in dB (0 dB = full scale, -60 dB = silence)
     pub left_rms_db: f32,
     /// Right channel RMS level in dB (0 dB = full scale, -60 dB = silence)
@@ -68,6 +93,8 @@ impl Default for CaptureStats {
             file_size_bytes: 0,
             buffer_frames: 0,
             is_recording: false,
+            is_monitoring: false,
+            pre_roll_buffer_secs: 0.0,
             left_rms_db: -60.0,
             right_rms_db: -60.0,
         }
@@ -78,6 +105,8 @@ impl Default for CaptureStats {
 #[derive(Debug)]
 pub enum CaptureCommand {
     Stop,
+    /// Transition from monitoring to recording mode
+    StartRecording { output_path: PathBuf },
 }
 
 /// Events sent from the capture thread
@@ -87,6 +116,13 @@ pub enum CaptureEvent {
     StatsUpdate(CaptureStats),
     Stopped,
     Error(String),
+    /// Monitoring mode has started (capturing to ring buffer)
+    MonitoringStarted,
+    /// Recording has started (pre-roll buffer was written to file)
+    RecordingStarted {
+        /// How many seconds of pre-roll audio were captured
+        pre_roll_secs: f32,
+    },
 }
 
 /// Process information
@@ -102,4 +138,13 @@ pub trait CaptureSessionImpl: Send {
     fn start(&mut self) -> anyhow::Result<Receiver<CaptureEvent>>;
     fn stop(&mut self) -> anyhow::Result<()>;
     fn is_recording(&self) -> bool;
+
+    /// Start monitoring mode - captures audio to ring buffer without recording
+    fn start_monitoring(&mut self, config: MonitorConfig) -> anyhow::Result<Receiver<CaptureEvent>>;
+
+    /// Transition from monitoring to recording
+    fn start_recording(&mut self, output_path: PathBuf) -> anyhow::Result<()>;
+
+    /// Check if currently in monitoring mode
+    fn is_monitoring(&self) -> bool;
 }

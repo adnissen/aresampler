@@ -41,13 +41,17 @@
 pub mod error;
 mod platform;
 pub mod process;
+pub mod ring_buffer;
 pub mod types;
 
 // Re-export all public types from types module
 pub use types::{
-    AudioSessionInfo, CaptureCommand, CaptureConfig, CaptureEvent, CaptureStats, PermissionStatus,
-    ProcessInfo,
+    AudioSessionInfo, CaptureCommand, CaptureConfig, CaptureEvent, CaptureStats, MonitorConfig,
+    PermissionStatus, ProcessInfo,
 };
+
+// Re-export ring buffer
+pub use ring_buffer::AudioRingBuffer;
 
 // Re-export process utilities
 pub use process::{get_parent_pid, get_process_info, process_exists};
