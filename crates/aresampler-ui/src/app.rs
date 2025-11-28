@@ -1,9 +1,9 @@
+use crate::playback::{load_samples_for_region, AudioPlayer};
+use crate::waveform::{trim_wav_file, DragHandle, TrimSelection, WaveformData, WaveformView};
 use aresampler_core::{
     enumerate_audio_sessions, is_capture_available, request_capture_permission, AudioSessionInfo,
     CaptureConfig, CaptureEvent, CaptureSession, CaptureStats, MonitorConfig, PermissionStatus,
 };
-use crate::playback::{load_samples_for_region, AudioPlayer};
-use crate::waveform::{trim_wav_file, DragHandle, TrimSelection, WaveformData, WaveformView};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::{
@@ -24,33 +24,59 @@ mod colors {
     use gpui::{rgb, Rgba};
 
     // Backgrounds
-    pub fn bg_primary() -> Rgba { rgb(0x0a0a0b) }
-    pub fn bg_secondary() -> Rgba { rgb(0x111113) }
-    pub fn bg_tertiary() -> Rgba { rgb(0x18181b) }
+    pub fn bg_primary() -> Rgba {
+        rgb(0x0a0a0b)
+    }
+    pub fn bg_secondary() -> Rgba {
+        rgb(0x111113)
+    }
+    pub fn bg_tertiary() -> Rgba {
+        rgb(0x18181b)
+    }
 
     // Borders
-    pub fn border() -> Rgba { rgb(0x27272a) }
+    pub fn border() -> Rgba {
+        rgb(0x27272a)
+    }
 
     // Text
-    pub fn text_primary() -> Rgba { rgb(0xfafafa) }
-    pub fn text_secondary() -> Rgba { rgb(0xa1a1aa) }
-    pub fn text_muted() -> Rgba { rgb(0x52525b) }
+    pub fn text_primary() -> Rgba {
+        rgb(0xfafafa)
+    }
+    pub fn text_secondary() -> Rgba {
+        rgb(0xa1a1aa)
+    }
+    pub fn text_muted() -> Rgba {
+        rgb(0x52525b)
+    }
 
     // Accent
-    pub fn accent() -> Rgba { rgb(0x22d3ee) }
+    pub fn accent() -> Rgba {
+        rgb(0x22d3ee)
+    }
 
     // Recording
-    pub fn recording() -> Rgba { rgb(0xef4444) }
+    pub fn recording() -> Rgba {
+        rgb(0xef4444)
+    }
 
     // Success (for level display)
-    pub fn success() -> Rgba { rgb(0x22c55e) }
+    pub fn success() -> Rgba {
+        rgb(0x22c55e)
+    }
 
     // Error
-    pub fn error_bg() -> Rgba { rgb(0x5c1a1a) }
-    pub fn error_text() -> Rgba { rgb(0xff6b6b) }
+    pub fn error_bg() -> Rgba {
+        rgb(0x5c1a1a)
+    }
+    pub fn error_text() -> Rgba {
+        rgb(0xff6b6b)
+    }
 
     // File icon purple
-    pub fn file_icon() -> Rgba { rgb(0x8b5cf6) }
+    pub fn file_icon() -> Rgba {
+        rgb(0x8b5cf6)
+    }
 }
 
 // Newtype wrapper to implement SelectItem (orphan rule workaround)
@@ -579,28 +605,26 @@ impl AppState {
                 self.error_message = None;
 
                 // Schedule a check to detect when playback finishes
-                cx.spawn(async move |this, mut cx| {
-                    loop {
-                        cx.background_executor()
-                            .timer(std::time::Duration::from_millis(100))
-                            .await;
-                        let should_stop = this
-                            .update(cx.deref_mut(), |state, _cx| {
-                                if let Some(player) = &state.audio_player {
-                                    player.is_empty()
-                                } else {
-                                    true
-                                }
-                            })
-                            .unwrap_or(true);
+                cx.spawn(async move |this, mut cx| loop {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(100))
+                        .await;
+                    let should_stop = this
+                        .update(cx.deref_mut(), |state, _cx| {
+                            if let Some(player) = &state.audio_player {
+                                player.is_empty()
+                            } else {
+                                true
+                            }
+                        })
+                        .unwrap_or(true);
 
-                        if should_stop {
-                            let _ = this.update(cx.deref_mut(), |state, cx| {
-                                state.is_playing = false;
-                                cx.notify();
-                            });
-                            break;
-                        }
+                    if should_stop {
+                        let _ = this.update(cx.deref_mut(), |state, cx| {
+                            state.is_playing = false;
+                            cx.notify();
+                        });
+                        break;
                     }
                 })
                 .detach();
@@ -678,6 +702,37 @@ impl AppState {
             .ok();
         })
         .detach();
+    }
+
+    fn reset_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Stop any active playback
+        if self.is_playing {
+            self.stop_playback(cx);
+        }
+
+        // Clear source selection
+        self.selected_process = None;
+        self.select_state.update(cx, |state, cx| {
+            state.set_selected_index(None, window, cx);
+        });
+
+        // Clear output path
+        self.output_path = None;
+
+        // Clear waveform and recording data
+        self.waveform_data = None;
+        self.waveform_loading = false;
+        self.trim_selection = TrimSelection::new();
+        self.waveform_bounds = None;
+
+        // Reset stats
+        self.stats = CaptureStats::default();
+        self.captured_pre_roll_secs = 0.0;
+
+        // Clear any error messages
+        self.error_message = None;
+
+        cx.notify();
     }
 
     fn handle_waveform_mouse_down(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
@@ -834,9 +889,8 @@ impl Render for AppState {
                 .into_any_element();
         }
 
-        let can_record = self.selected_process.is_some()
-            && self.output_path.is_some()
-            && !self.is_recording;
+        let can_record =
+            self.selected_process.is_some() && self.output_path.is_some() && !self.is_recording;
 
         let record_button_label = if self.is_recording {
             "Stop Recording"
@@ -845,12 +899,8 @@ impl Render for AppState {
         };
 
         // Pre-roll values for the segmented toggle
-        let pre_roll_options: [(f32, &str); 4] = [
-            (0.0, "Off"),
-            (5.0, "5s"),
-            (10.0, "10s"),
-            (30.0, "30s"),
-        ];
+        let pre_roll_options: [(f32, &str); 4] =
+            [(0.0, "Off"), (5.0, "5s"), (10.0, "10s"), (30.0, "30s")];
 
         v_flex()
             .size_full()
@@ -865,81 +915,97 @@ impl Render for AppState {
                     .gap_0()
                     // Source Selection Card
                     .child(self.render_source_card(cx))
+                    // Arrow divider between source and output
+                    .child(self.render_arrow_divider())
                     // Output File Card
                     .child(self.render_output_card(cx))
-                    // Pre-roll Toggle Row
-                    .child(
-                        h_flex()
-                            .px_4()
-                            .py_3()
-                            .items_center()
-                            .justify_between()
-                            .border_b_1()
-                            .border_color(colors::border())
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(colors::text_secondary())
-                                    .child("Pre-roll buffer"),
-                            )
-                            .child(
-                                h_flex()
-                                    .gap_1()
-                                    .p_1()
-                                    .bg(colors::bg_tertiary())
-                                    .rounded_md()
-                                    .children(pre_roll_options.iter().enumerate().map(|(idx, (value, label))| {
-                                        let is_active = (self.pre_roll_seconds - *value).abs() < 0.1;
-                                        let value = *value;
-                                        let is_disabled = self.is_recording || self.is_monitoring;
+                    // Pre-roll Toggle Row (hidden after recording complete)
+                    .when(self.waveform_data.is_none() || self.is_recording, |this| {
+                        this.child(
+                            h_flex()
+                                .px_4()
+                                .py_3()
+                                .items_center()
+                                .justify_between()
+                                .border_b_1()
+                                .border_color(colors::border())
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(colors::text_secondary())
+                                        .child("Pre-roll buffer"),
+                                )
+                                .child(
+                                    h_flex()
+                                        .gap_1()
+                                        .p_1()
+                                        .bg(colors::bg_tertiary())
+                                        .rounded_md()
+                                        .children(pre_roll_options.iter().enumerate().map(
+                                            |(idx, (value, label))| {
+                                                let is_active =
+                                                    (self.pre_roll_seconds - *value).abs() < 0.1;
+                                                let value = *value;
+                                                let is_disabled =
+                                                    self.is_recording || self.is_monitoring;
 
-                                        div()
-                                            .id(ElementId::Name(format!("preroll_{}", idx).into()))
-                                            .px_2()
-                                            .py_1()
-                                            .rounded(px(6.0))
-                                            .text_xs()
-                                            .cursor_pointer()
-                                            .when(is_active, |this| {
-                                                this.bg(colors::bg_secondary())
-                                                    .text_color(colors::accent())
-                                            })
-                                            .when(!is_active, |this| {
-                                                this.text_color(colors::text_muted())
-                                            })
-                                            .when(is_disabled, |this| {
-                                                this.opacity(0.5)
-                                                    .cursor_not_allowed()
-                                            })
-                                            .when(!is_disabled, |this| {
-                                                this.on_mouse_down(
-                                                    gpui::MouseButton::Left,
-                                                    cx.listener(move |this, _, _window, cx| {
-                                                        // Stop monitoring if turning off pre-roll
-                                                        if value == 0.0 && this.is_monitoring {
-                                                            this.stop_monitoring(cx);
-                                                        }
-                                                        this.pre_roll_seconds = value;
-                                                        // Start monitoring if selecting a process with pre-roll enabled
-                                                        if value > 0.0 {
-                                                            if let Some(process) = this.selected_process.clone() {
-                                                                this.start_monitoring(&process, cx);
-                                                            }
-                                                        }
-                                                        cx.notify();
-                                                    }),
-                                                )
-                                            })
-                                            .child(*label)
-                                    })),
-                            ),
-                    )
-                    // Record Button
-                    .child(
-                        div()
-                            .px_4()
-                            .py_3()
-                            .child(
+                                                div()
+                                                    .id(ElementId::Name(
+                                                        format!("preroll_{}", idx).into(),
+                                                    ))
+                                                    .px_2()
+                                                    .py_1()
+                                                    .rounded(px(6.0))
+                                                    .text_xs()
+                                                    .cursor_pointer()
+                                                    .when(is_active, |this| {
+                                                        this.bg(colors::bg_secondary())
+                                                            .text_color(colors::accent())
+                                                    })
+                                                    .when(!is_active, |this| {
+                                                        this.text_color(colors::text_muted())
+                                                    })
+                                                    .when(is_disabled, |this| {
+                                                        this.opacity(0.5).cursor_not_allowed()
+                                                    })
+                                                    .when(!is_disabled, |this| {
+                                                        this.on_mouse_down(
+                                                            gpui::MouseButton::Left,
+                                                            cx.listener(
+                                                                move |this, _, _window, cx| {
+                                                                    // Stop monitoring if turning off pre-roll
+                                                                    if value == 0.0
+                                                                        && this.is_monitoring
+                                                                    {
+                                                                        this.stop_monitoring(cx);
+                                                                    }
+                                                                    this.pre_roll_seconds = value;
+                                                                    // Start monitoring if selecting a process with pre-roll enabled
+                                                                    if value > 0.0 {
+                                                                        if let Some(process) = this
+                                                                            .selected_process
+                                                                            .clone()
+                                                                        {
+                                                                            this.start_monitoring(
+                                                                                &process, cx,
+                                                                            );
+                                                                        }
+                                                                    }
+                                                                    cx.notify();
+                                                                },
+                                                            ),
+                                                        )
+                                                    })
+                                                    .child(*label)
+                                            },
+                                        )),
+                                ),
+                        )
+                    })
+                    // Record Button (hidden after recording complete)
+                    .when(self.waveform_data.is_none() || self.is_recording, |this| {
+                        this.child(
+                            div().px_4().py_3().child(
                                 div()
                                     .id("record-button")
                                     .w_full()
@@ -953,12 +1019,10 @@ impl Render for AppState {
                                     .justify_center()
                                     .gap_2()
                                     .when(self.is_recording, |this| {
-                                        this.bg(colors::recording())
-                                            .text_color(rgb(0xffffff))
+                                        this.bg(colors::recording()).text_color(rgb(0xffffff))
                                     })
                                     .when(!self.is_recording && can_record, |this| {
-                                        this.bg(colors::recording())
-                                            .text_color(rgb(0xffffff))
+                                        this.bg(colors::recording()).text_color(rgb(0xffffff))
                                     })
                                     .when(!self.is_recording && !can_record, |this| {
                                         this.bg(colors::recording())
@@ -975,15 +1039,11 @@ impl Render for AppState {
                                         )
                                     })
                                     // Record icon (circle)
-                                    .child(
-                                        div()
-                                            .size(px(12.0))
-                                            .rounded_full()
-                                            .bg(rgb(0xffffff)),
-                                    )
+                                    .child(div().size(px(12.0)).rounded_full().bg(rgb(0xffffff)))
                                     .child(record_button_label),
                             ),
-                    )
+                        )
+                    })
                     // Stats Row (shown during/after recording)
                     .when(self.is_recording || self.waveform_data.is_some(), |this| {
                         this.child(self.render_stats_row())
@@ -1022,18 +1082,16 @@ impl Render for AppState {
 }
 
 impl AppState {
-    /// Render the header with logo and app name
+    /// Render the header with app name (matches GPUI TitleBar: 34px height, 80px left padding)
     fn render_header(&self) -> impl IntoElement {
         h_flex()
             .w_full()
-            .pl(px(80.0))  // Left padding for macOS traffic lights
+            .h(px(34.0)) // GPUI TITLE_BAR_HEIGHT
+            .pl(px(80.0)) // GPUI TITLE_BAR_LEFT_PADDING for macOS traffic lights
             .pr_4()
-            .py_3()
             .items_center()
-            .gap_2()
             .border_b_1()
             .border_color(colors::border())
-            .child(self.render_logo())
             .child(
                 div()
                     .text_sm()
@@ -1042,22 +1100,33 @@ impl AppState {
             )
     }
 
-    /// Render the logo icon (cyan gradient box with audio icon)
-    fn render_logo(&self) -> impl IntoElement {
-        div()
-            .size(px(22.0))
-            .rounded(px(6.0))
-            .bg(colors::accent())
-            .flex()
+    /// Render the arrow divider between source and output cards
+    fn render_arrow_divider(&self) -> impl IntoElement {
+        h_flex()
+            .w_full()
+            .px_4()
             .items_center()
-            .justify_center()
+            .gap_3()
+            // Left line segment
             .child(
-                // Simple audio bars icon using divs
-                h_flex()
-                    .gap(px(1.0))
-                    .child(div().w(px(2.0)).h(px(6.0)).rounded(px(1.0)).bg(colors::bg_primary()))
-                    .child(div().w(px(2.0)).h(px(10.0)).rounded(px(1.0)).bg(colors::bg_primary()))
-                    .child(div().w(px(2.0)).h(px(6.0)).rounded(px(1.0)).bg(colors::bg_primary())),
+                div()
+                    .flex_1()
+                    .h(px(1.0))
+                    .bg(colors::border()),
+            )
+            // Arrow icon in the middle
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(colors::text_muted())
+                    .child("↓"),
+            )
+            // Right line segment
+            .child(
+                div()
+                    .flex_1()
+                    .h(px(1.0))
+                    .bg(colors::border()),
             )
     }
 
@@ -1068,8 +1137,6 @@ impl AppState {
         div()
             .px_4()
             .py_3()
-            .border_b_1()
-            .border_color(colors::border())
             .child(
                 // Container with relative positioning for the overlay
                 div()
@@ -1082,37 +1149,32 @@ impl AppState {
                             .px_3()
                             .py_2()
                             .rounded(px(10.0))
-                            .when(has_selection, |this| {
-                                this.bg(colors::bg_tertiary())
-                            })
+                            .when(has_selection, |this| this.bg(colors::bg_tertiary()))
                             .when(!has_selection, |this| {
-                                this.border_1()
-                                    .border_color(colors::border())
+                                this.border_1().border_color(colors::border())
                             })
                             .child(
                                 h_flex()
                                     .gap_3()
                                     .items_center()
                                     // Icon
-                                    .child(
-                                        if let Some(process) = &self.selected_process {
-                                            if let Some(icon) = &process.icon {
-                                                div()
-                                                    .size(px(28.0))
-                                                    .rounded(px(6.0))
-                                                    .overflow_hidden()
-                                                    .child(
-                                                        img(ImageSource::Render(icon.clone()))
-                                                            .size(px(28.0)),
-                                                    )
-                                                    .into_any_element()
-                                            } else {
-                                                self.render_placeholder_icon().into_any_element()
-                                            }
+                                    .child(if let Some(process) = &self.selected_process {
+                                        if let Some(icon) = &process.icon {
+                                            div()
+                                                .size(px(28.0))
+                                                .rounded(px(6.0))
+                                                .overflow_hidden()
+                                                .child(
+                                                    img(ImageSource::Render(icon.clone()))
+                                                        .size(px(28.0)),
+                                                )
+                                                .into_any_element()
                                         } else {
                                             self.render_placeholder_icon().into_any_element()
-                                        },
-                                    )
+                                        }
+                                    } else {
+                                        self.render_placeholder_icon().into_any_element()
+                                    })
                                     // Text content
                                     .child(
                                         v_flex()
@@ -1135,16 +1197,14 @@ impl AppState {
                                                         self.selected_process
                                                             .as_ref()
                                                             .map(|p| p.name.clone())
-                                                            .unwrap_or_else(|| "Select application...".to_string()),
+                                                            .unwrap_or_else(|| {
+                                                                "Select application...".to_string()
+                                                            }),
                                                     ),
                                             ),
                                     )
                                     // Chevron
-                                    .child(
-                                        div()
-                                            .text_color(colors::text_muted())
-                                            .child("▼"),
-                                    ),
+                                    .child(div().text_color(colors::text_muted()).child("▼")),
                             ),
                     )
                     // Invisible Select overlay (handles click and dropdown)
@@ -1219,12 +1279,9 @@ impl AppState {
                     .py_2()
                     .rounded(px(10.0))
                     .cursor_pointer()
-                    .when(has_output, |this| {
-                        this.bg(colors::bg_tertiary())
-                    })
+                    .when(has_output, |this| this.bg(colors::bg_tertiary()))
                     .when(!has_output, |this| {
-                        this.border_1()
-                            .border_color(colors::border())
+                        this.border_1().border_color(colors::border())
                     })
                     .on_mouse_down(
                         gpui::MouseButton::Left,
@@ -1260,11 +1317,7 @@ impl AppState {
                                     ),
                             )
                             // Chevron
-                            .child(
-                                div()
-                                    .text_color(colors::text_muted())
-                                    .child("▼"),
-                            ),
+                            .child(div().text_color(colors::text_muted()).child("▼")),
                     ),
             )
     }
@@ -1277,16 +1330,16 @@ impl AppState {
             .flex()
             .items_center()
             .justify_center()
-            .when(has_output, |this| {
-                this.bg(colors::file_icon())
-            })
-            .when(!has_output, |this| {
-                this.bg(colors::bg_tertiary())
-            })
+            .when(has_output, |this| this.bg(colors::file_icon()))
+            .when(!has_output, |this| this.bg(colors::bg_tertiary()))
             .child(
                 div()
                     .text_xs()
-                    .text_color(if has_output { rgb(0xffffff) } else { colors::text_muted() })
+                    .text_color(if has_output {
+                        rgb(0xffffff)
+                    } else {
+                        colors::text_muted()
+                    })
                     .child("📄"),
             )
     }
@@ -1296,7 +1349,10 @@ impl AppState {
         // Total duration includes any captured pre-roll
         let total_duration = self.stats.duration_secs + self.captured_pre_roll_secs as f64;
         let duration = format!("{:.1}s", total_duration);
-        let size = format!("{:.1} MB", self.stats.file_size_bytes as f64 / (1024.0 * 1024.0));
+        let size = format!(
+            "{:.1} MB",
+            self.stats.file_size_bytes as f64 / (1024.0 * 1024.0)
+        );
         // Average the left and right RMS for a single level display
         let level = (self.stats.left_rms_db + self.stats.right_rms_db) / 2.0;
         let level_str = format!("{:.0} dB", level);
@@ -1336,12 +1392,7 @@ impl AppState {
                     .p_2()
                     .bg(colors::bg_tertiary())
                     .rounded_md()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(size),
-                    )
+                    .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(size))
                     .child(
                         div()
                             .text_xs()
@@ -1384,11 +1435,21 @@ impl AppState {
         let duration = data.duration_secs;
 
         // Calculate times based on trim selection
-        let start_time = format!("{}:{:02}", (duration * self.trim_selection.start as f64) as u32 / 60,
-            (duration * self.trim_selection.start as f64) as u32 % 60);
-        let current_time = format!("{}:{:02}", (duration * 0.75) as u32 / 60, (duration * 0.75) as u32 % 60);
-        let end_time = format!("{}:{:02}", (duration * self.trim_selection.end as f64) as u32 / 60,
-            (duration * self.trim_selection.end as f64) as u32 % 60);
+        let start_time = format!(
+            "{}:{:02}",
+            (duration * self.trim_selection.start as f64) as u32 / 60,
+            (duration * self.trim_selection.start as f64) as u32 % 60
+        );
+        let current_time = format!(
+            "{}:{:02}",
+            (duration * 0.75) as u32 / 60,
+            (duration * 0.75) as u32 % 60
+        );
+        let end_time = format!(
+            "{}:{:02}",
+            (duration * self.trim_selection.end as f64) as u32 / 60,
+            (duration * self.trim_selection.end as f64) as u32 % 60
+        );
 
         v_flex()
             .px_4()
@@ -1443,11 +1504,7 @@ impl AppState {
                     .text_xs()
                     .text_color(colors::text_muted())
                     .child(start_time)
-                    .child(
-                        div()
-                            .text_color(colors::accent())
-                            .child(current_time),
-                    )
+                    .child(div().text_color(colors::accent()).child(current_time))
                     .child(end_time),
             )
             // Control buttons
@@ -1495,10 +1552,7 @@ impl AppState {
                             .cursor_pointer()
                             .text_sm()
                             .text_color(colors::text_secondary())
-                            .when(!is_modified, |this| {
-                                this.opacity(0.5)
-                                    .cursor_not_allowed()
-                            })
+                            .when(!is_modified, |this| this.opacity(0.5).cursor_not_allowed())
                             .when(is_modified, |this| {
                                 this.on_mouse_down(
                                     gpui::MouseButton::Left,
@@ -1508,6 +1562,27 @@ impl AppState {
                                 )
                             })
                             .child("Cut Selection"),
+                    )
+                    // Reset button (icon only, same size as play button)
+                    .child(
+                        div()
+                            .id("reset-button")
+                            .size(px(44.0))
+                            .rounded(px(10.0))
+                            .bg(colors::bg_tertiary())
+                            .border_1()
+                            .border_color(colors::border())
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(|this, _, window, cx| {
+                                    this.reset_session(window, cx);
+                                }),
+                            )
+                            .child(div().text_color(colors::text_secondary()).child("↺")),
                     ),
             )
     }
