@@ -176,6 +176,7 @@ pub struct AppState {
     // Recording state
     is_recording: bool,
     stats: CaptureStats,
+    captured_pre_roll_secs: f32, // Pre-roll duration captured when recording started
     capture_session: Option<CaptureSession>,
     event_receiver: Option<Receiver<CaptureEvent>>,
 
@@ -263,6 +264,7 @@ impl AppState {
             is_monitoring: false,
             is_recording: false,
             stats: CaptureStats::default(),
+            captured_pre_roll_secs: 0.0,
             capture_session: None,
             event_receiver: None,
             error_message: None,
@@ -359,6 +361,7 @@ impl AppState {
                 self.is_recording = false;
                 self.error_message = None;
                 self.stats = CaptureStats::default();
+                self.captured_pre_roll_secs = 0.0;
             }
             Err(e) => {
                 self.error_message = Some(format!("Failed to start monitoring: {}", e));
@@ -440,6 +443,7 @@ impl AppState {
                 self.is_recording = true;
                 self.error_message = None;
                 self.stats = CaptureStats::default();
+                self.captured_pre_roll_secs = 0.0; // No pre-roll in direct recording mode
                 cx.notify();
             }
             Err(e) => {
@@ -462,10 +466,11 @@ impl AppState {
                     CaptureEvent::MonitoringStarted => {
                         // Monitoring started successfully
                     }
-                    CaptureEvent::RecordingStarted { pre_roll_secs: _ } => {
+                    CaptureEvent::RecordingStarted { pre_roll_secs } => {
                         // Transitioned from monitoring to recording
                         self.is_monitoring = false;
                         self.is_recording = true;
+                        self.captured_pre_roll_secs = pre_roll_secs as f32;
                     }
                     CaptureEvent::StatsUpdate(stats) => {
                         self.stats = stats;
@@ -980,7 +985,7 @@ impl Render for AppState {
                             ),
                     )
                     // Stats Row (shown during/after recording)
-                    .when(self.is_recording || self.is_monitoring || self.waveform_data.is_some(), |this| {
+                    .when(self.is_recording || self.waveform_data.is_some(), |this| {
                         this.child(self.render_stats_row())
                     })
                     // Waveform Section (shown after recording)
@@ -1288,7 +1293,9 @@ impl AppState {
 
     /// Render the horizontal stats row
     fn render_stats_row(&self) -> impl IntoElement {
-        let duration = format!("{:.1}s", self.stats.duration_secs);
+        // Total duration includes any captured pre-roll
+        let total_duration = self.stats.duration_secs + self.captured_pre_roll_secs as f64;
+        let duration = format!("{:.1}s", total_duration);
         let size = format!("{:.1} MB", self.stats.file_size_bytes as f64 / (1024.0 * 1024.0));
         // Average the left and right RMS for a single level display
         let level = (self.stats.left_rms_db + self.stats.right_rms_db) / 2.0;
