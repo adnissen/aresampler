@@ -4,8 +4,12 @@ use aresampler_core::{
     enumerate_audio_sessions, is_capture_available, request_capture_permission, AudioSessionInfo,
     CaptureConfig, CaptureEvent, CaptureSession, CaptureStats, MonitorConfig, PermissionStatus,
 };
-use gpui::prelude::FluentBuilder;
-use gpui::*;
+use gpui::{
+    div, img, point, prelude::FluentBuilder, px, relative, rgb, AnyElement, App, AppContext,
+    Bounds, Context, CursorStyle, ElementId, Entity, FontWeight, ImageSource, InteractiveElement,
+    IntoElement, MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Point, Render, RenderImage,
+    SharedString, Size, Styled, Window,
+};
 use gpui_component::{
     button::{Button, ButtonVariants},
     h_flex,
@@ -931,9 +935,26 @@ impl Render for AppState {
                                 .border_color(colors::border())
                                 .child(
                                     div()
-                                        .text_xs()
-                                        .text_color(colors::text_secondary())
-                                        .child("Pre-roll buffer"),
+                                        .w(relative(0.5))
+                                        .relative()
+                                        .child(
+                                            div()
+                                                .top_neg_3()
+                                                .text_xs()
+                                                .text_color(colors::text_secondary())
+                                                .child("Pre-roll buffer"),
+                                        )
+                                        .child(
+                                            v_flex()
+                                                .absolute()
+                                                .top_1p5()
+                                                .left_0()
+                                                .w(relative(0.8))
+                                                .text_color(colors::text_muted())
+                                                .text_size(px(9.0))
+                                                .line_height(px(10.0))
+                                                .child("time saved before recording starts"),
+                                        ),
                                 )
                                 .child(
                                     h_flex()
