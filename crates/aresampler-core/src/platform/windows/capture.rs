@@ -188,8 +188,8 @@ fn run_capture(
 
     // Create application loopback client
     // Note: include_child_processes is now always true (hardcoded)
-    let mut audio_client = AudioClient::new_application_loopback_client(config.pid, true)
-        .map_err(|e| {
+    let mut audio_client =
+        AudioClient::new_application_loopback_client(config.pid, true).map_err(|e| {
             anyhow!(
                 "Failed to create application loopback client: {}. Make sure the PID is valid.",
                 e
@@ -251,7 +251,8 @@ fn run_capture(
         )
     })?;
     let buf_writer = BufWriter::new(file);
-    let mut wav_writer = WavWriter::new(buf_writer, wav_spec).context("Failed to create WAV writer")?;
+    let mut wav_writer =
+        WavWriter::new(buf_writer, wav_spec).context("Failed to create WAV writer")?;
 
     // Start the stream
     audio_client
@@ -325,7 +326,12 @@ fn run_capture(
                     let left_samples: Vec<f32> =
                         samples.iter().step_by(num_channels).copied().collect();
                     let right_samples: Vec<f32> = if num_channels > 1 {
-                        samples.iter().skip(1).step_by(num_channels).copied().collect()
+                        samples
+                            .iter()
+                            .skip(1)
+                            .step_by(num_channels)
+                            .copied()
+                            .collect()
                     } else {
                         left_samples.clone()
                     };
@@ -362,7 +368,9 @@ fn run_capture(
         .map_err(|e| anyhow!("Failed to stop audio stream: {}", e))?;
 
     // Finalize the WAV file
-    wav_writer.finalize().context("Failed to finalize WAV file")?;
+    wav_writer
+        .finalize()
+        .context("Failed to finalize WAV file")?;
 
     Ok(())
 }
@@ -402,8 +410,8 @@ fn run_monitor(
     }
 
     // Create application loopback client
-    let mut audio_client = AudioClient::new_application_loopback_client(config.pid, true)
-        .map_err(|e| {
+    let mut audio_client =
+        AudioClient::new_application_loopback_client(config.pid, true).map_err(|e| {
             anyhow!(
                 "Failed to create application loopback client: {}. Make sure the PID is valid.",
                 e
@@ -568,7 +576,12 @@ fn run_monitor(
                     let left_samples: Vec<f32> =
                         samples.iter().step_by(num_channels).copied().collect();
                     let right_samples: Vec<f32> = if num_channels > 1 {
-                        samples.iter().skip(1).step_by(num_channels).copied().collect()
+                        samples
+                            .iter()
+                            .skip(1)
+                            .step_by(num_channels)
+                            .copied()
+                            .collect()
                     } else {
                         left_samples.clone()
                     };

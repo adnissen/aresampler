@@ -106,15 +106,21 @@ impl Default for CaptureStats {
 pub enum CaptureCommand {
     Stop,
     /// Transition from monitoring to recording mode
-    StartRecording { output_path: PathBuf },
+    StartRecording {
+        output_path: PathBuf,
+    },
     /// Resize the pre-roll buffer while monitoring
-    ResizePreRoll { duration_secs: f32 },
+    ResizePreRoll {
+        duration_secs: f32,
+    },
 }
 
 /// Events sent from the capture thread
 #[derive(Debug)]
 pub enum CaptureEvent {
-    Started { buffer_size: usize },
+    Started {
+        buffer_size: usize,
+    },
     StatsUpdate(CaptureStats),
     Stopped,
     Error(String),
@@ -142,7 +148,8 @@ pub trait CaptureSessionImpl: Send {
     fn is_recording(&self) -> bool;
 
     /// Start monitoring mode - captures audio to ring buffer without recording
-    fn start_monitoring(&mut self, config: MonitorConfig) -> anyhow::Result<Receiver<CaptureEvent>>;
+    fn start_monitoring(&mut self, config: MonitorConfig)
+        -> anyhow::Result<Receiver<CaptureEvent>>;
 
     /// Transition from monitoring to recording
     fn start_recording(&mut self, output_path: PathBuf) -> anyhow::Result<()>;

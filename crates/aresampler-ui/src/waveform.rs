@@ -13,7 +13,10 @@ pub struct TrimSelection {
 
 impl Default for TrimSelection {
     fn default() -> Self {
-        Self { start: 0.0, end: 1.0 }
+        Self {
+            start: 0.0,
+            end: 1.0,
+        }
     }
 }
 
@@ -207,12 +210,12 @@ impl WaveformView {
         // BG_PRIMARY: 0x0a0a0b -> hsla(0.0, 0.0, 0.04, 1.0)
         Self {
             data,
-            color: hsla(0.52, 0.82, 0.54, 1.0),      // Accent cyan
+            color: hsla(0.52, 0.82, 0.54, 1.0), // Accent cyan
             line_width: 1.5,
-            background: hsla(0.0, 0.0, 0.04, 1.0),   // BG_PRIMARY dark
-            vertical_padding: 0.1,                    // 10% padding top and bottom
+            background: hsla(0.0, 0.0, 0.04, 1.0), // BG_PRIMARY dark
+            vertical_padding: 0.1,                 // 10% padding top and bottom
             trim_selection: None,
-            dimmed_color: hsla(0.0, 0.0, 0.0, 0.6),  // Semi-transparent black overlay
+            dimmed_color: hsla(0.0, 0.0, 0.0, 0.6), // Semi-transparent black overlay
             handle_color: hsla(0.52, 0.82, 0.54, 1.0), // Accent cyan for handles
             handle_width: 4.0,
         }
@@ -446,7 +449,9 @@ pub fn trim_wav_file(
     let end_frame = (total_frames as f32 * end_fraction) as usize;
 
     if end_frame <= start_frame {
-        return Err(WaveformError::UnsupportedFormat("Invalid trim range".into()));
+        return Err(WaveformError::UnsupportedFormat(
+            "Invalid trim range".into(),
+        ));
     }
 
     // Read all samples into memory

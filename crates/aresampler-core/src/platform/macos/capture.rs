@@ -461,14 +461,19 @@ fn run_monitor(
 
     // Get the first display for fallback
     let displays = content.displays();
-    let display = displays.first().ok_or_else(|| anyhow!("No displays found"))?;
+    let display = displays
+        .first()
+        .ok_or_else(|| anyhow!("No displays found"))?;
 
     // Create content filter
     let filter = if let Some(window) = app_window {
         SCContentFilter::new().with_desktop_independent_window(window)
     } else {
-        SCContentFilter::new()
-            .with_display_including_application_excepting_windows(display, &[&app], &[])
+        SCContentFilter::new().with_display_including_application_excepting_windows(
+            display,
+            &[&app],
+            &[],
+        )
     };
 
     // Configure the stream for audio capture
@@ -628,15 +633,20 @@ fn run_capture(
 
     // Get the first display for fallback
     let displays = content.displays();
-    let display = displays.first().ok_or_else(|| anyhow!("No displays found"))?;
+    let display = displays
+        .first()
+        .ok_or_else(|| anyhow!("No displays found"))?;
 
     // Create content filter - prefer app window, fallback to display with app filter
     let filter = if let Some(window) = app_window {
         SCContentFilter::new().with_desktop_independent_window(window)
     } else {
         // Fallback: capture from display including only this application
-        SCContentFilter::new()
-            .with_display_including_application_excepting_windows(display, &[&app], &[])
+        SCContentFilter::new().with_display_including_application_excepting_windows(
+            display,
+            &[&app],
+            &[],
+        )
     };
 
     // Configure the stream for audio capture
@@ -668,8 +678,7 @@ fn run_capture(
         )
     })?;
     let buf_writer = BufWriter::new(file);
-    let wav_writer =
-        WavWriter::new(buf_writer, wav_spec).context("Failed to create WAV writer")?;
+    let wav_writer = WavWriter::new(buf_writer, wav_spec).context("Failed to create WAV writer")?;
 
     // Create shared state for the output handler
     let state = Arc::new(Mutex::new(AudioOutputState {

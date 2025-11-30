@@ -980,7 +980,8 @@ impl Render for AppState {
                                                                     } else if this.is_monitoring {
                                                                         // Already monitoring - resize the buffer
                                                                         if let Some(session) =
-                                                                            &mut this.capture_session
+                                                                            &mut this
+                                                                                .capture_session
                                                                         {
                                                                             let _ = session
                                                                                 .resize_pre_roll(
@@ -1104,7 +1105,7 @@ impl AppState {
                 div()
                     .text_sm()
                     .font_weight(FontWeight::SEMIBOLD)
-                    .child("Aresampler"),
+                    .child("aresampler"),
             )
     }
 
@@ -1116,132 +1117,114 @@ impl AppState {
             .items_center()
             .gap_3()
             // Left line segment
-            .child(
-                div()
-                    .flex_1()
-                    .h(px(1.0))
-                    .bg(colors::border()),
-            )
+            .child(div().flex_1().h(px(1.0)).bg(colors::border()))
             // Arrow icon in the middle
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(colors::text_muted())
-                    .child("↓"),
-            )
+            .child(div().text_sm().text_color(colors::text_muted()).child("↓"))
             // Right line segment
-            .child(
-                div()
-                    .flex_1()
-                    .h(px(1.0))
-                    .bg(colors::border()),
-            )
+            .child(div().flex_1().h(px(1.0)).bg(colors::border()))
     }
 
     /// Render the source (application) selection card
     fn render_source_card(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let has_selection = self.selected_process.is_some();
 
-        div()
-            .px_4()
-            .py_3()
-            .child(
-                // Container with relative positioning for the overlay
-                div()
-                    .relative()
-                    .w_full()
-                    .child(
-                        // Custom styled card (visual only)
-                        div()
-                            .w_full()
-                            .px_3()
-                            .py_2()
-                            .rounded(px(10.0))
-                            .when(has_selection, |this| this.bg(colors::bg_tertiary()))
-                            .when(!has_selection, |this| {
-                                this.border_1().border_color(colors::border())
-                            })
-                            .child(
-                                h_flex()
-                                    .gap_3()
-                                    .items_center()
-                                    // Icon
-                                    .child(if let Some(process) = &self.selected_process {
-                                        if let Some(icon) = &process.icon {
-                                            div()
-                                                .size(px(28.0))
-                                                .rounded(px(6.0))
-                                                .overflow_hidden()
-                                                .child(
-                                                    img(ImageSource::Render(icon.clone()))
-                                                        .size(px(28.0)),
-                                                )
-                                                .into_any_element()
-                                        } else {
-                                            self.render_placeholder_icon().into_any_element()
-                                        }
+        div().px_4().py_3().child(
+            // Container with relative positioning for the overlay
+            div()
+                .relative()
+                .w_full()
+                .child(
+                    // Custom styled card (visual only)
+                    div()
+                        .w_full()
+                        .px_3()
+                        .py_2()
+                        .rounded(px(10.0))
+                        .when(has_selection, |this| this.bg(colors::bg_tertiary()))
+                        .when(!has_selection, |this| {
+                            this.border_1().border_color(colors::border())
+                        })
+                        .child(
+                            h_flex()
+                                .gap_3()
+                                .items_center()
+                                // Icon
+                                .child(if let Some(process) = &self.selected_process {
+                                    if let Some(icon) = &process.icon {
+                                        div()
+                                            .size(px(28.0))
+                                            .rounded(px(6.0))
+                                            .overflow_hidden()
+                                            .child(
+                                                img(ImageSource::Render(icon.clone()))
+                                                    .size(px(28.0)),
+                                            )
+                                            .into_any_element()
                                     } else {
                                         self.render_placeholder_icon().into_any_element()
-                                    })
-                                    // Text content
-                                    .child(
-                                        v_flex()
-                                            .flex_1()
-                                            .gap(px(2.0))
-                                            .child(
-                                                div()
-                                                    .text_xs()
-                                                    .text_color(colors::text_muted())
-                                                    .child("RECORDING FROM"),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_sm()
-                                                    .font_weight(FontWeight::MEDIUM)
-                                                    .when(!has_selection, |this| {
-                                                        this.text_color(colors::text_muted())
-                                                    })
-                                                    .child(
-                                                        self.selected_process
-                                                            .as_ref()
-                                                            .map(|p| p.name.clone())
-                                                            .unwrap_or_else(|| {
-                                                                "Select application...".to_string()
-                                                            }),
-                                                    ),
-                                            ),
-                                    )
-                                    // Chevron
-                                    .child(div().text_color(colors::text_muted()).child("▼")),
-                            ),
-                    )
-                    // Invisible Select overlay (handles click and dropdown)
-                    .child(
-                        div()
-                            .id("source-select-overlay")
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .w_full()
-                            .h_full()
-                            .cursor_pointer()
-                            .on_mouse_down(
-                                gpui::MouseButton::Left,
-                                cx.listener(|this, _, window, cx| {
-                                    // Refresh processes before the dropdown opens
-                                    this.refresh_processes(window, cx);
-                                }),
-                            )
-                            .child(
-                                Select::new(&self.select_state)
-                                    .w_full()
-                                    .h_full()
-                                    .appearance(false)
-                                    .opacity(0.0)
-                                    .placeholder("Select application..."),
-                            ),
-                    ),
-            )
+                                    }
+                                } else {
+                                    self.render_placeholder_icon().into_any_element()
+                                })
+                                // Text content
+                                .child(
+                                    v_flex()
+                                        .flex_1()
+                                        .gap(px(2.0))
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(colors::text_muted())
+                                                .child("RECORDING FROM"),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_sm()
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .when(!has_selection, |this| {
+                                                    this.text_color(colors::text_muted())
+                                                })
+                                                .child(
+                                                    self.selected_process
+                                                        .as_ref()
+                                                        .map(|p| p.name.clone())
+                                                        .unwrap_or_else(|| {
+                                                            "Select application...".to_string()
+                                                        }),
+                                                ),
+                                        ),
+                                )
+                                // Chevron
+                                .child(div().text_color(colors::text_muted()).child("▼")),
+                        ),
+                )
+                // Invisible Select overlay (handles click and dropdown)
+                .child(
+                    div()
+                        .id("source-select-overlay")
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .w_full()
+                        .h_full()
+                        .cursor_pointer()
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(|this, _, window, cx| {
+                                // Refresh processes before the dropdown opens
+                                this.refresh_processes(window, cx);
+                            }),
+                        )
+                        .child(
+                            Select::new(&self.select_state)
+                                .w_full()
+                                .h_full()
+                                .appearance(false)
+                                .opacity(0.0)
+                                .placeholder("Select application..."),
+                        ),
+                ),
+        )
     }
 
     /// Render a placeholder icon for empty selection
