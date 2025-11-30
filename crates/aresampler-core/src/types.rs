@@ -107,6 +107,8 @@ pub enum CaptureCommand {
     Stop,
     /// Transition from monitoring to recording mode
     StartRecording { output_path: PathBuf },
+    /// Resize the pre-roll buffer while monitoring
+    ResizePreRoll { duration_secs: f32 },
 }
 
 /// Events sent from the capture thread

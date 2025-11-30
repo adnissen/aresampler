@@ -946,8 +946,7 @@ impl Render for AppState {
                                                 let is_active =
                                                     (self.pre_roll_seconds - *value).abs() < 0.1;
                                                 let value = *value;
-                                                let is_disabled =
-                                                    self.is_recording || self.is_monitoring;
+                                                let is_disabled = self.is_recording;
 
                                                 div()
                                                     .id(ElementId::Name(
@@ -973,15 +972,23 @@ impl Render for AppState {
                                                             gpui::MouseButton::Left,
                                                             cx.listener(
                                                                 move |this, _, _window, cx| {
-                                                                    // Stop monitoring if turning off pre-roll
                                                                     if value == 0.0
                                                                         && this.is_monitoring
                                                                     {
+                                                                        // Turning off pre-roll - stop monitoring
                                                                         this.stop_monitoring(cx);
-                                                                    }
-                                                                    this.pre_roll_seconds = value;
-                                                                    // Start monitoring if selecting a process with pre-roll enabled
-                                                                    if value > 0.0 {
+                                                                    } else if this.is_monitoring {
+                                                                        // Already monitoring - resize the buffer
+                                                                        if let Some(session) =
+                                                                            &mut this.capture_session
+                                                                        {
+                                                                            let _ = session
+                                                                                .resize_pre_roll(
+                                                                                    value,
+                                                                                );
+                                                                        }
+                                                                    } else if value > 0.0 {
+                                                                        // Not monitoring - start monitoring
                                                                         if let Some(process) = this
                                                                             .selected_process
                                                                             .clone()
@@ -991,6 +998,7 @@ impl Render for AppState {
                                                                             );
                                                                         }
                                                                     }
+                                                                    this.pre_roll_seconds = value;
                                                                     cx.notify();
                                                                 },
                                                             ),

@@ -107,6 +107,53 @@ impl AudioRingBuffer {
     pub fn len(&self) -> usize {
         self.filled
     }
+
+    /// Resize the buffer to a new duration.
+    ///
+    /// - Shrinking: keeps the newest samples, drops oldest
+    /// - Expanding: existing samples become the oldest in the new buffer
+    pub fn resize(&mut self, new_duration_secs: f32) {
+        let samples_per_second = self.sample_rate as usize * self.channels as usize;
+        let new_capacity = (new_duration_secs * samples_per_second as f32) as usize;
+
+        if new_capacity == self.capacity {
+            return; // No change needed
+        }
+
+        if new_capacity == 0 {
+            self.buffer = Vec::new();
+            self.capacity = 0;
+            self.write_pos = 0;
+            self.filled = 0;
+            return;
+        }
+
+        // Extract current samples in chronological order (oldest to newest)
+        let current_samples = self.drain();
+
+        // Create new buffer
+        self.buffer = vec![0.0; new_capacity];
+        self.capacity = new_capacity;
+
+        if current_samples.is_empty() {
+            self.write_pos = 0;
+            self.filled = 0;
+            return;
+        }
+
+        if new_capacity >= current_samples.len() {
+            // Expanding: copy all samples, they become the "oldest"
+            self.buffer[..current_samples.len()].copy_from_slice(&current_samples);
+            self.write_pos = current_samples.len() % new_capacity;
+            self.filled = current_samples.len();
+        } else {
+            // Shrinking: keep only the newest samples (skip oldest)
+            let skip = current_samples.len() - new_capacity;
+            self.buffer.copy_from_slice(&current_samples[skip..]);
+            self.write_pos = 0; // Buffer is now full, write_pos wraps to 0
+            self.filled = new_capacity;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -200,5 +247,122 @@ mod tests {
         let buf = AudioRingBuffer::new(0.0, 48000, 2);
         assert_eq!(buf.capacity, 0);
         assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn test_resize_shrink_full_buffer() {
+        // Buffer for 10 samples, shrink to 5
+        let mut buf = AudioRingBuffer::new(0.01, 1000, 1);
+        assert_eq!(buf.capacity, 10);
+
+        // Fill with samples 0-9
+        let samples: Vec<f32> = (0..10).map(|i| i as f32).collect();
+        buf.push(&samples);
+        assert_eq!(buf.len(), 10);
+
+        // Shrink to 5 samples - should keep newest (5-9)
+        buf.resize(0.005);
+        assert_eq!(buf.capacity, 5);
+        assert_eq!(buf.len(), 5);
+
+        let drained = buf.drain();
+        let expected: Vec<f32> = (5..10).map(|i| i as f32).collect();
+        assert_eq!(drained, expected);
+    }
+
+    #[test]
+    fn test_resize_shrink_partial_buffer() {
+        // Buffer for 10 samples, only 3 filled, shrink to 5
+        let mut buf = AudioRingBuffer::new(0.01, 1000, 1);
+        buf.push(&[1.0, 2.0, 3.0]);
+
+        buf.resize(0.005);
+        assert_eq!(buf.capacity, 5);
+        assert_eq!(buf.len(), 3);
+
+        let drained = buf.drain();
+        assert_eq!(drained, vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn test_resize_expand_full_buffer() {
+        // Buffer for 5 samples, expand to 10
+        let mut buf = AudioRingBuffer::new(0.005, 1000, 1);
+        assert_eq!(buf.capacity, 5);
+
+        // Fill with samples 0-4
+        let samples: Vec<f32> = (0..5).map(|i| i as f32).collect();
+        buf.push(&samples);
+
+        // Expand to 10 - existing samples become oldest
+        buf.resize(0.01);
+        assert_eq!(buf.capacity, 10);
+        assert_eq!(buf.len(), 5);
+
+        // Push 3 more samples
+        buf.push(&[10.0, 11.0, 12.0]);
+        assert_eq!(buf.len(), 8);
+
+        let drained = buf.drain();
+        // Should have original 5 (oldest) followed by 3 new
+        assert_eq!(drained, vec![0.0, 1.0, 2.0, 3.0, 4.0, 10.0, 11.0, 12.0]);
+    }
+
+    #[test]
+    fn test_resize_expand_partial_buffer() {
+        // Buffer for 5 samples, 3 filled, expand to 10
+        let mut buf = AudioRingBuffer::new(0.005, 1000, 1);
+        buf.push(&[1.0, 2.0, 3.0]);
+
+        buf.resize(0.01);
+        assert_eq!(buf.capacity, 10);
+        assert_eq!(buf.len(), 3);
+
+        let drained = buf.drain();
+        assert_eq!(drained, vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn test_resize_to_zero() {
+        let mut buf = AudioRingBuffer::new(0.01, 1000, 1);
+        buf.push(&[1.0, 2.0, 3.0]);
+
+        buf.resize(0.0);
+        assert_eq!(buf.capacity, 0);
+        assert_eq!(buf.len(), 0);
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn test_resize_same_size() {
+        let mut buf = AudioRingBuffer::new(0.01, 1000, 1);
+        buf.push(&[1.0, 2.0, 3.0]);
+
+        buf.resize(0.01);
+        assert_eq!(buf.capacity, 10);
+        assert_eq!(buf.len(), 3);
+
+        let drained = buf.drain();
+        assert_eq!(drained, vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn test_resize_with_wrapped_buffer() {
+        // Buffer for 5 samples, push 8 to cause wrap, then resize
+        let mut buf = AudioRingBuffer::new(0.005, 1000, 1);
+        assert_eq!(buf.capacity, 5);
+
+        // Push 8 samples - buffer wraps, keeps 3-7
+        let samples: Vec<f32> = (0..8).map(|i| i as f32).collect();
+        buf.push(&samples);
+        assert_eq!(buf.len(), 5);
+
+        // Shrink to 3 - should keep newest (5, 6, 7)
+        buf.resize(0.003);
+        assert_eq!(buf.capacity, 3);
+        assert_eq!(buf.len(), 3);
+
+        let drained = buf.drain();
+        assert_eq!(drained, vec![5.0, 6.0, 7.0]);
     }
 }

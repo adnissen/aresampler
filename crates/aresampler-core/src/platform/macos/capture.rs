@@ -123,6 +123,21 @@ impl CaptureSession {
         }
     }
 
+    /// Resize the pre-roll buffer while monitoring
+    pub fn resize_pre_roll(&mut self, duration_secs: f32) -> Result<()> {
+        if !self.is_monitoring {
+            return Err(anyhow!("Can only resize pre-roll while monitoring"));
+        }
+
+        if let Some(tx) = &self.command_tx {
+            tx.send(CaptureCommand::ResizePreRoll { duration_secs })
+                .map_err(|_| anyhow!("Failed to send resize command"))?;
+            Ok(())
+        } else {
+            Err(anyhow!("No active monitoring session"))
+        }
+    }
+
     /// Stop the capture or monitoring
     pub fn stop(&mut self) -> Result<()> {
         if let Some(tx) = self.command_tx.take() {
@@ -552,6 +567,10 @@ fn run_monitor(
 
                 let _ = event_tx.send(CaptureEvent::RecordingStarted { pre_roll_secs });
             }
+            Ok(CaptureCommand::ResizePreRoll { duration_secs }) => {
+                let mut state = state.lock().map_err(|_| anyhow!("Failed to lock state"))?;
+                state.ring_buffer.resize(duration_secs);
+            }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
@@ -689,6 +708,10 @@ fn run_capture(
             Ok(CaptureCommand::Stop) => break,
             Ok(CaptureCommand::StartRecording { .. }) => {
                 // Ignored in direct capture mode - already recording
+                continue;
+            }
+            Ok(CaptureCommand::ResizePreRoll { .. }) => {
+                // Ignored in direct capture mode - no ring buffer
                 continue;
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
