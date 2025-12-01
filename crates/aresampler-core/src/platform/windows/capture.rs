@@ -275,6 +275,9 @@ fn run_capture(
             Ok(CaptureCommand::StartRecording { .. }) => {
                 // Ignored in direct capture mode - already recording
             }
+            Ok(CaptureCommand::ResizePreRoll { .. }) => {
+                // Ignored in direct capture mode - no ring buffer
+            }
             Err(_) => {}
         }
 

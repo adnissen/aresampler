@@ -8,7 +8,7 @@ use gpui::{
     div, img, point, prelude::FluentBuilder, px, relative, rgb, AnyElement, App, AppContext,
     Bounds, Context, CursorStyle, ElementId, Entity, FontWeight, ImageSource, InteractiveElement,
     IntoElement, MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Point, Render, RenderImage,
-    SharedString, Size, Styled, Window,
+    SharedString, Size, Styled, Window, WindowControlArea,
 };
 use gpui_component::{
     button::{Button, ButtonVariants},
@@ -848,7 +848,7 @@ impl Render for AppState {
                 .size_full()
                 .bg(colors::bg_primary())
                 .text_color(colors::text_primary())
-                .child(self.render_header())
+                .child(self.render_header(cx))
                 .child(
                     v_flex()
                         .flex_1()
@@ -911,7 +911,7 @@ impl Render for AppState {
             .bg(colors::bg_secondary())
             .text_color(colors::text_primary())
             // Header with logo
-            .child(self.render_header())
+            .child(self.render_header(cx))
             // Main content
             .child(
                 v_flex()
@@ -1112,22 +1112,91 @@ impl Render for AppState {
 }
 
 impl AppState {
-    /// Render the header with app name (matches GPUI TitleBar: 34px height, 80px left padding)
-    fn render_header(&self) -> impl IntoElement {
+    /// Render the header with app name (matches GPUI TitleBar: 34px height)
+    /// On macOS: 80px left padding for traffic lights, no right buttons
+    /// On Windows: no left padding, minimize/close buttons on right, draggable area
+    fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let is_windows = cfg!(target_os = "windows");
+
         h_flex()
             .w_full()
             .h(px(34.0)) // GPUI TITLE_BAR_HEIGHT
-            .pl(px(80.0)) // GPUI TITLE_BAR_LEFT_PADDING for macOS traffic lights
-            .pr_4()
-            .items_center()
             .border_b_1()
             .border_color(colors::border())
+            // Draggable title area (contains label and fills remaining space)
             .child(
-                div()
-                    .text_sm()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child("aresampler"),
+                h_flex()
+                    .id("titlebar-drag-area")
+                    .flex_1()
+                    .h_full()
+                    .items_center()
+                    // On macOS: left padding for traffic lights. On Windows: small padding for label
+                    .when(!is_windows, |this| this.pl(px(80.0)))
+                    .when(is_windows, |this| this.pl_3())
+                    // Mark this area as a window drag region for the platform
+                    .window_control_area(WindowControlArea::Drag)
+                    // App name label
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("aresampler"),
+                    ),
             )
+            // Window control buttons (Windows only)
+            .when(is_windows, |this| {
+                this.child(
+                    h_flex()
+                        .items_center()
+                        // Minimize button
+                        .child(
+                            div()
+                                .id("minimize-button")
+                                .w(px(46.0))
+                                .h(px(34.0))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .cursor_pointer()
+                                .hover(|this| this.bg(colors::bg_tertiary()))
+                                .on_mouse_down(
+                                    gpui::MouseButton::Left,
+                                    cx.listener(|_this, _, window, _cx| {
+                                        window.minimize_window();
+                                    }),
+                                )
+                                .child(
+                                    // Minimize icon (horizontal line)
+                                    div().w(px(10.0)).h(px(1.0)).bg(colors::text_secondary()),
+                                ),
+                        )
+                        // Close button
+                        .child(
+                            div()
+                                .id("close-button")
+                                .w(px(46.0))
+                                .h(px(34.0))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .cursor_pointer()
+                                .hover(|this| this.bg(colors::recording()))
+                                .on_mouse_down(
+                                    gpui::MouseButton::Left,
+                                    cx.listener(|_this, _, window, _cx| {
+                                        window.remove_window();
+                                    }),
+                                )
+                                .child(
+                                    // Close icon (X character)
+                                    div()
+                                        .text_xs()
+                                        .text_color(colors::text_secondary())
+                                        .child("✕"),
+                                ),
+                        ),
+                )
+            })
     }
 
     /// Render the arrow divider between source and output cards
