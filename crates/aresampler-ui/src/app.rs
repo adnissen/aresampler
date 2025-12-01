@@ -1,22 +1,21 @@
 use crate::playback::{load_samples_for_region, AudioPlayer};
+use crate::source_selection::{render_placeholder_icon, ProcessItem, SourceSelectionState};
 use crate::waveform::{trim_wav_file, DragHandle, TrimSelection, WaveformData, WaveformView};
 use aresampler_core::{
-    enumerate_audio_sessions, is_capture_available, request_capture_permission, AudioSessionInfo,
-    CaptureConfig, CaptureEvent, CaptureSession, CaptureStats, MonitorConfig, PermissionStatus,
+    is_capture_available, request_capture_permission, CaptureConfig, CaptureEvent, CaptureSession,
+    CaptureStats, MonitorConfig, PermissionStatus,
 };
 use gpui::{
-    div, img, point, prelude::FluentBuilder, px, relative, rgb, AnyElement, App, AppContext,
-    Bounds, Context, CursorStyle, ElementId, Entity, FontWeight, ImageSource, InteractiveElement,
-    IntoElement, MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Point, Render, RenderImage,
-    SharedString, Size, Styled, Window, WindowControlArea,
+    div, img, point, prelude::FluentBuilder, px, relative, rgb, Bounds, Context, CursorStyle,
+    ElementId, FontWeight, ImageSource, InteractiveElement, IntoElement, MouseDownEvent,
+    MouseMoveEvent, ParentElement, Pixels, Point, Render, Size, Styled, Window, WindowControlArea,
 };
 use gpui_component::{
     button::{Button, ButtonVariants},
     h_flex,
-    select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState},
+    select::{SearchableVec, Select, SelectEvent},
     v_flex,
 };
-use std::collections::HashMap;
 use std::ops::DerefMut;
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
@@ -24,7 +23,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 // Color scheme
-mod colors {
+pub mod colors {
     use gpui::{rgb, Rgba};
 
     // Backgrounds
@@ -83,118 +82,13 @@ mod colors {
     }
 }
 
-// Newtype wrapper to implement SelectItem (orphan rule workaround)
-#[derive(Clone)]
-pub struct ProcessItem {
-    pub pid: u32,
-    pub name: String,
-    /// Pre-rendered icon for GPUI display
-    pub icon: Option<Arc<RenderImage>>,
-}
-
-impl ProcessItem {
-    /// Create a ProcessItem from AudioSessionInfo, using the icon cache for efficiency.
-    /// If the icon is not in the cache, it will be decoded and added.
-    fn from_audio_session(
-        info: AudioSessionInfo,
-        icon_cache: &mut HashMap<String, Arc<RenderImage>>,
-    ) -> Self {
-        // Use bundle_id as cache key, fall back to name if no bundle_id
-        let cache_key = info.bundle_id.clone().unwrap_or_else(|| info.name.clone());
-
-        // Check cache first
-        let icon = if let Some(cached_icon) = icon_cache.get(&cache_key) {
-            Some(cached_icon.clone())
-        } else {
-            // Not in cache - decode and cache it
-            let new_icon = info.icon_png.and_then(|png_bytes| {
-                let img = image::load_from_memory(&png_bytes).ok()?;
-                let mut rgba = img.to_rgba8();
-
-                // Convert RGBA to BGRA (GPUI expects BGRA format)
-                for pixel in rgba.chunks_exact_mut(4) {
-                    pixel.swap(0, 2); // Swap R and B channels
-                }
-
-                let frame = image::Frame::new(rgba);
-                Some(Arc::new(RenderImage::new(vec![frame])))
-            });
-
-            // Cache the icon if we got one
-            if let Some(ref icon) = new_icon {
-                icon_cache.insert(cache_key, icon.clone());
-            }
-
-            new_icon
-        };
-
-        Self {
-            pid: info.pid,
-            name: info.name,
-            icon,
-        }
-    }
-}
-
-impl SelectItem for ProcessItem {
-    type Value = u32;
-
-    fn value(&self) -> &Self::Value {
-        &self.pid
-    }
-
-    fn title(&self) -> SharedString {
-        format!("{}", self.name).into()
-    }
-
-    fn display_title(&self) -> Option<AnyElement> {
-        Some(
-            h_flex()
-                .gap_2()
-                .items_center()
-                .when_some(self.icon.clone(), |this, icon| {
-                    this.child(
-                        img(ImageSource::Render(icon))
-                            .size(px(16.0))
-                            .flex_shrink_0(),
-                    )
-                })
-                .child(div().overflow_hidden().text_ellipsis().child(self.title()))
-                .into_any_element(),
-        )
-    }
-
-    fn render(&self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        h_flex()
-            .gap_2()
-            .items_center()
-            .when_some(self.icon.clone(), |this, icon| {
-                this.child(
-                    img(ImageSource::Render(icon))
-                        .size(px(16.0))
-                        .flex_shrink_0(),
-                )
-            })
-            .when(self.icon.is_none(), |this| {
-                // Empty placeholder to maintain alignment when no icon
-                this.child(div().size(px(16.0)).flex_shrink_0())
-            })
-            .child(div().overflow_hidden().text_ellipsis().child(self.title()))
-    }
-}
-
 pub struct AppState {
     // Permission state
     has_permission: bool,
     permission_error: Option<String>,
 
-    // Process selection
-    processes: Vec<ProcessItem>,
-    select_state: Entity<SelectState<SearchableVec<ProcessItem>>>,
-    selected_process: Option<ProcessItem>,
-
-    // Icon cache: maps bundle_id (or name) to rendered icon
-    icon_cache: HashMap<String, Arc<RenderImage>>,
+    // Source selection (process/application picker)
+    source_selection: SourceSelectionState,
 
     // Output file
     output_path: Option<PathBuf>,
@@ -243,31 +137,18 @@ impl AppState {
             None
         };
 
-        // Initialize icon cache and enumerate processes
-        let mut icon_cache = HashMap::new();
-        let processes: Vec<ProcessItem> = if has_permission {
-            enumerate_audio_sessions()
-                .unwrap_or_default()
-                .into_iter()
-                .map(|info| ProcessItem::from_audio_session(info, &mut icon_cache))
-                .collect()
-        } else {
-            Vec::new()
-        };
-        let searchable = SearchableVec::new(processes.clone());
-
-        // Create select state
-        let select_state = cx.new(|cx| SelectState::new(searchable, None, window, cx));
+        // Initialize source selection state
+        let source_selection = SourceSelectionState::new(has_permission, window, cx);
 
         // Subscribe to select events
         cx.subscribe(
-            &select_state,
+            &source_selection.select_state,
             |this, _, event: &SelectEvent<SearchableVec<ProcessItem>>, cx| {
                 if let SelectEvent::Confirm(Some(pid)) = event {
                     // Find the selected process by PID
-                    if let Some(process) = this.processes.iter().find(|p| p.pid == *pid) {
+                    if let Some(process) = this.source_selection.find_process(*pid) {
                         let process_clone = process.clone();
-                        this.selected_process = Some(process_clone.clone());
+                        this.source_selection.set_selected(process_clone.clone());
                         this.error_message = None;
 
                         // Start monitoring for this process if pre-roll is enabled
@@ -285,10 +166,7 @@ impl AppState {
         Self {
             has_permission,
             permission_error,
-            processes,
-            select_state,
-            selected_process: None,
-            icon_cache,
+            source_selection,
             output_path: None,
             pre_roll_seconds: 10.0,
             is_monitoring: false,
@@ -355,20 +233,8 @@ impl AppState {
         // Stop any active monitoring when refreshing
         self.stop_monitoring(cx);
 
-        // Use the icon cache to avoid re-decoding icons for known processes
-        self.processes = enumerate_audio_sessions()
-            .unwrap_or_default()
-            .into_iter()
-            .map(|info| ProcessItem::from_audio_session(info, &mut self.icon_cache))
-            .collect();
-        let searchable = SearchableVec::new(self.processes.clone());
-
-        // Update select state with new items
-        self.select_state.update(cx, |state, _cx| {
-            state.set_items(searchable, window, _cx);
-        });
-
-        self.selected_process = None;
+        // Refresh via source selection state
+        self.source_selection.refresh_processes(window, cx);
         cx.notify();
     }
 
@@ -423,7 +289,7 @@ impl AppState {
             self.stop_playback(cx);
         }
 
-        let Some(process) = &self.selected_process else {
+        let Some(process) = &self.source_selection.selected_process else {
             self.error_message = Some("Please select a process".into());
             cx.notify();
             return;
@@ -715,8 +581,8 @@ impl AppState {
         }
 
         // Clear source selection
-        self.selected_process = None;
-        self.select_state.update(cx, |state, cx| {
+        self.source_selection.selected_process = None;
+        self.source_selection.select_state.update(cx, |state, cx| {
             state.set_selected_index(None, window, cx);
         });
 
@@ -893,8 +759,9 @@ impl Render for AppState {
                 .into_any_element();
         }
 
-        let can_record =
-            self.selected_process.is_some() && self.output_path.is_some() && !self.is_recording;
+        let can_record = self.source_selection.selected_process.is_some()
+            && self.output_path.is_some()
+            && !self.is_recording;
 
         let record_button_label = if self.is_recording {
             "Stop Recording"
@@ -1012,6 +879,7 @@ impl Render for AppState {
                                                                     } else if value > 0.0 {
                                                                         // Not monitoring - start monitoring
                                                                         if let Some(process) = this
+                                                                            .source_selection
                                                                             .selected_process
                                                                             .clone()
                                                                         {
@@ -1216,7 +1084,7 @@ impl AppState {
 
     /// Render the source (application) selection card
     fn render_source_card(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let has_selection = self.selected_process.is_some();
+        let has_selection = self.source_selection.selected_process.is_some();
 
         div().px_4().py_3().child(
             // Container with relative positioning for the overlay
@@ -1239,23 +1107,25 @@ impl AppState {
                                 .gap_3()
                                 .items_center()
                                 // Icon
-                                .child(if let Some(process) = &self.selected_process {
-                                    if let Some(icon) = &process.icon {
-                                        div()
-                                            .size(px(28.0))
-                                            .rounded(px(6.0))
-                                            .overflow_hidden()
-                                            .child(
-                                                img(ImageSource::Render(icon.clone()))
-                                                    .size(px(28.0)),
-                                            )
-                                            .into_any_element()
+                                .child(
+                                    if let Some(process) = &self.source_selection.selected_process {
+                                        if let Some(icon) = &process.icon {
+                                            div()
+                                                .size(px(28.0))
+                                                .rounded(px(6.0))
+                                                .overflow_hidden()
+                                                .child(
+                                                    img(ImageSource::Render(icon.clone()))
+                                                        .size(px(28.0)),
+                                                )
+                                                .into_any_element()
+                                        } else {
+                                            render_placeholder_icon().into_any_element()
+                                        }
                                     } else {
-                                        self.render_placeholder_icon().into_any_element()
-                                    }
-                                } else {
-                                    self.render_placeholder_icon().into_any_element()
-                                })
+                                        render_placeholder_icon().into_any_element()
+                                    },
+                                )
                                 // Text content
                                 .child(
                                     v_flex()
@@ -1275,7 +1145,8 @@ impl AppState {
                                                     this.text_color(colors::text_muted())
                                                 })
                                                 .child(
-                                                    self.selected_process
+                                                    self.source_selection
+                                                        .selected_process
                                                         .as_ref()
                                                         .map(|p| p.name.clone())
                                                         .unwrap_or_else(|| {
@@ -1306,7 +1177,7 @@ impl AppState {
                             }),
                         )
                         .child(
-                            Select::new(&self.select_state)
+                            Select::new(&self.source_selection.select_state)
                                 .w_full()
                                 .h_full()
                                 .appearance(false)
@@ -1315,26 +1186,6 @@ impl AppState {
                         ),
                 ),
         )
-    }
-
-    /// Render a placeholder icon for empty selection
-    fn render_placeholder_icon(&self) -> impl IntoElement {
-        div()
-            .size(px(28.0))
-            .rounded(px(6.0))
-            .bg(colors::bg_tertiary())
-            .border_1()
-            .border_color(colors::border())
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(
-                div()
-                    .size(px(14.0))
-                    .rounded(px(3.0))
-                    .border_1()
-                    .border_color(colors::text_muted()),
-            )
     }
 
     /// Render the output file selection card

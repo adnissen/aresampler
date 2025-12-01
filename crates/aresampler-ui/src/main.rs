@@ -4,6 +4,7 @@ use gpui_component::init as init_components;
 
 mod app;
 mod playback;
+mod source_selection;
 mod waveform;
 
 fn main() -> Result<()> {
