@@ -27,7 +27,8 @@ pub struct AudioSessionInfo {
 /// Configuration for audio capture
 #[derive(Clone, Debug)]
 pub struct CaptureConfig {
-    pub pid: u32,
+    /// Process IDs to capture audio from (can be multiple applications)
+    pub pids: Vec<u32>,
     pub output_path: PathBuf,
     pub sample_rate: u32,
     pub channels: u16,
@@ -37,7 +38,7 @@ pub struct CaptureConfig {
 impl Default for CaptureConfig {
     fn default() -> Self {
         Self {
-            pid: 0,
+            pids: Vec::new(),
             output_path: PathBuf::new(),
             sample_rate: 48000,
             channels: 2,
@@ -49,7 +50,8 @@ impl Default for CaptureConfig {
 /// Configuration for monitoring mode (pre-recording with ring buffer)
 #[derive(Clone, Debug)]
 pub struct MonitorConfig {
-    pub pid: u32,
+    /// Process IDs to capture audio from (can be multiple applications)
+    pub pids: Vec<u32>,
     pub sample_rate: u32,
     pub channels: u16,
     /// Pre-roll buffer duration in seconds (0 = no buffering)
@@ -59,7 +61,7 @@ pub struct MonitorConfig {
 impl Default for MonitorConfig {
     fn default() -> Self {
         Self {
-            pid: 0,
+            pids: Vec::new(),
             sample_rate: 48000,
             channels: 2,
             pre_roll_duration_secs: 10.0,

@@ -181,15 +181,24 @@ fn run_capture(
     command_rx: &Receiver<CaptureCommand>,
     event_tx: &Sender<CaptureEvent>,
 ) -> Result<()> {
+    // Validate that we have at least one PID
+    if config.pids.is_empty() {
+        return Err(anyhow!("No PIDs specified for capture"));
+    }
+
+    // Windows WASAPI only supports single-PID capture, use the first one
+    // TODO: Support multiple PIDs by creating multiple loopback clients and mixing
+    let pid = config.pids[0];
+
     // Validate that the process exists
-    if !process_exists(config.pid) {
-        return Err(anyhow!("Process with PID {} does not exist", config.pid));
+    if !process_exists(pid) {
+        return Err(anyhow!("Process with PID {} does not exist", pid));
     }
 
     // Create application loopback client
     // Note: include_child_processes is now always true (hardcoded)
     let mut audio_client =
-        AudioClient::new_application_loopback_client(config.pid, true).map_err(|e| {
+        AudioClient::new_application_loopback_client(pid, true).map_err(|e| {
             anyhow!(
                 "Failed to create application loopback client: {}. Make sure the PID is valid.",
                 e
@@ -407,14 +416,23 @@ fn run_monitor(
     command_rx: &Receiver<CaptureCommand>,
     event_tx: &Sender<CaptureEvent>,
 ) -> Result<()> {
+    // Validate that we have at least one PID
+    if config.pids.is_empty() {
+        return Err(anyhow!("No PIDs specified for capture"));
+    }
+
+    // Windows WASAPI only supports single-PID capture, use the first one
+    // TODO: Support multiple PIDs by creating multiple loopback clients and mixing
+    let pid = config.pids[0];
+
     // Validate that the process exists
-    if !process_exists(config.pid) {
-        return Err(anyhow!("Process with PID {} does not exist", config.pid));
+    if !process_exists(pid) {
+        return Err(anyhow!("Process with PID {} does not exist", pid));
     }
 
     // Create application loopback client
     let mut audio_client =
-        AudioClient::new_application_loopback_client(config.pid, true).map_err(|e| {
+        AudioClient::new_application_loopback_client(pid, true).map_err(|e| {
             anyhow!(
                 "Failed to create application loopback client: {}. Make sure the PID is valid.",
                 e

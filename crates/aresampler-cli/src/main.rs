@@ -92,7 +92,7 @@ fn main() -> Result<()> {
 /// Run in direct recording mode (original behavior)
 fn run_direct_mode(args: &Args, running: Arc<AtomicBool>) -> Result<()> {
     let config = CaptureConfig {
-        pid: args.pid,
+        pids: vec![args.pid],
         output_path: args.output.clone(),
         ..Default::default()
     };
@@ -157,7 +157,7 @@ fn run_direct_mode(args: &Args, running: Arc<AtomicBool>) -> Result<()> {
 /// Run in monitor mode with pre-roll buffer
 fn run_monitor_mode(args: &Args, running: Arc<AtomicBool>) -> Result<()> {
     let monitor_config = MonitorConfig {
-        pid: args.pid,
+        pids: vec![args.pid],
         pre_roll_duration_secs: args.pre_roll,
         ..Default::default()
     };

@@ -432,48 +432,85 @@ fn run_monitor(
     command_rx: &Receiver<CaptureCommand>,
     event_tx: &Sender<CaptureEvent>,
 ) -> Result<()> {
-    // Validate that the process exists
-    if !process_exists(config.pid) {
-        return Err(anyhow!("Process with PID {} does not exist", config.pid));
+    // Validate that we have at least one PID
+    if config.pids.is_empty() {
+        return Err(anyhow!("No PIDs specified for capture"));
+    }
+
+    // Validate that all processes exist
+    for &pid in &config.pids {
+        if !process_exists(pid) {
+            return Err(anyhow!("Process with PID {} does not exist", pid));
+        }
     }
 
     // Get shareable content
     let content = SCShareableContent::get()
         .map_err(|e| anyhow!("Failed to get shareable content: {:?}", e))?;
 
-    // Find the application by PID
-    let app = content
-        .applications()
-        .into_iter()
-        .find(|a| a.process_id() as u32 == config.pid)
-        .ok_or_else(|| {
-            anyhow!(
-                "Application with PID {} not found in shareable content",
-                config.pid
-            )
-        })?;
-
-    // Find a window belonging to this application
-    let windows = content.windows();
-    let app_window = windows
+    // Find all applications by their PIDs
+    let all_apps = content.applications();
+    let apps: Vec<_> = config
+        .pids
         .iter()
-        .find(|w| w.owning_application().process_id() == app.process_id());
+        .filter_map(|&pid| {
+            all_apps
+                .iter()
+                .find(|a| a.process_id() as u32 == pid)
+                .cloned()
+        })
+        .collect();
 
-    // Get the first display for fallback
+    if apps.is_empty() {
+        return Err(anyhow!(
+            "No applications found in shareable content for the specified PIDs"
+        ));
+    }
+
+    // Get the first display
     let displays = content.displays();
     let display = displays
         .first()
         .ok_or_else(|| anyhow!("No displays found"))?;
 
+    // Collect windows from target apps
+    let all_windows = content.windows();
+    let app_pids: Vec<_> = apps.iter().map(|a| a.process_id()).collect();
+    let target_windows: Vec<_> = all_windows
+        .iter()
+        .filter(|w| app_pids.contains(&w.owning_application().process_id()))
+        .collect();
+
     // Create content filter
-    let filter = if let Some(window) = app_window {
-        SCContentFilter::new().with_desktop_independent_window(window)
+    let filter = if apps.len() == 1 {
+        // For single app, try window-based capture first (more reliable)
+        if let Some(window) = target_windows.first() {
+            SCContentFilter::new().with_desktop_independent_window(window)
+        } else {
+            SCContentFilter::new().with_display_including_application_excepting_windows(
+                display,
+                &[&apps[0]],
+                &[],
+            )
+        }
     } else {
+        // For multiple apps, use display-level capture with application filter
+        let app_refs: Vec<_> = apps.iter().collect();
         SCContentFilter::new().with_display_including_application_excepting_windows(
             display,
-            &[&app],
+            &app_refs,
             &[],
         )
+    };
+
+    // Get display dimensions for stream config
+    // Display-level capture may require valid video dimensions even for audio-only
+    let (width, height) = if apps.len() == 1 && target_windows.first().is_some() {
+        // For single window capture, minimal dimensions work
+        (1u32, 1u32)
+    } else {
+        // For display-level capture, use small but valid dimensions
+        (100u32, 100u32)
     };
 
     // Configure the stream for audio capture
@@ -484,9 +521,9 @@ fn run_monitor(
         .map_err(|e| anyhow!("Failed to set sample rate: {:?}", e))?
         .set_channel_count(config.channels as u8)
         .map_err(|e| anyhow!("Failed to set channel count: {:?}", e))?
-        .set_width(1)
+        .set_width(width)
         .map_err(|e| anyhow!("Failed to set width: {:?}", e))?
-        .set_height(1)
+        .set_height(height)
         .map_err(|e| anyhow!("Failed to set height: {:?}", e))?;
 
     // Create ring buffer for pre-roll
@@ -604,49 +641,85 @@ fn run_capture(
     command_rx: &Receiver<CaptureCommand>,
     event_tx: &Sender<CaptureEvent>,
 ) -> Result<()> {
-    // Validate that the process exists
-    if !process_exists(config.pid) {
-        return Err(anyhow!("Process with PID {} does not exist", config.pid));
+    // Validate that we have at least one PID
+    if config.pids.is_empty() {
+        return Err(anyhow!("No PIDs specified for capture"));
+    }
+
+    // Validate that all processes exist
+    for &pid in &config.pids {
+        if !process_exists(pid) {
+            return Err(anyhow!("Process with PID {} does not exist", pid));
+        }
     }
 
     // Get shareable content
     let content = SCShareableContent::get()
         .map_err(|e| anyhow!("Failed to get shareable content: {:?}", e))?;
 
-    // Find the application by PID
-    let app = content
-        .applications()
-        .into_iter()
-        .find(|a| a.process_id() as u32 == config.pid)
-        .ok_or_else(|| {
-            anyhow!(
-                "Application with PID {} not found in shareable content",
-                config.pid
-            )
-        })?;
-
-    // Find a window belonging to this application to use for the content filter
-    let windows = content.windows();
-    let app_window = windows
+    // Find all applications by their PIDs
+    let all_apps = content.applications();
+    let apps: Vec<_> = config
+        .pids
         .iter()
-        .find(|w| w.owning_application().process_id() == app.process_id());
+        .filter_map(|&pid| {
+            all_apps
+                .iter()
+                .find(|a| a.process_id() as u32 == pid)
+                .cloned()
+        })
+        .collect();
 
-    // Get the first display for fallback
+    if apps.is_empty() {
+        return Err(anyhow!(
+            "No applications found in shareable content for the specified PIDs"
+        ));
+    }
+
+    // Get the first display
     let displays = content.displays();
     let display = displays
         .first()
         .ok_or_else(|| anyhow!("No displays found"))?;
 
-    // Create content filter - prefer app window, fallback to display with app filter
-    let filter = if let Some(window) = app_window {
-        SCContentFilter::new().with_desktop_independent_window(window)
+    // Collect windows from target apps
+    let all_windows = content.windows();
+    let app_pids: Vec<_> = apps.iter().map(|a| a.process_id()).collect();
+    let target_windows: Vec<_> = all_windows
+        .iter()
+        .filter(|w| app_pids.contains(&w.owning_application().process_id()))
+        .collect();
+
+    // Create content filter
+    let filter = if apps.len() == 1 {
+        // For single app, try window-based capture first (more reliable)
+        if let Some(window) = target_windows.first() {
+            SCContentFilter::new().with_desktop_independent_window(window)
+        } else {
+            SCContentFilter::new().with_display_including_application_excepting_windows(
+                display,
+                &[&apps[0]],
+                &[],
+            )
+        }
     } else {
-        // Fallback: capture from display including only this application
+        // For multiple apps, use display-level capture with application filter
+        let app_refs: Vec<_> = apps.iter().collect();
         SCContentFilter::new().with_display_including_application_excepting_windows(
             display,
-            &[&app],
+            &app_refs,
             &[],
         )
+    };
+
+    // Get display dimensions for stream config
+    // Display-level capture may require valid video dimensions even for audio-only
+    let (width, height) = if apps.len() == 1 && target_windows.first().is_some() {
+        // For single window capture, minimal dimensions work
+        (1u32, 1u32)
+    } else {
+        // For display-level capture, use small but valid dimensions
+        (100u32, 100u32)
     };
 
     // Configure the stream for audio capture
@@ -657,10 +730,9 @@ fn run_capture(
         .map_err(|e| anyhow!("Failed to set sample rate: {:?}", e))?
         .set_channel_count(config.channels as u8)
         .map_err(|e| anyhow!("Failed to set channel count: {:?}", e))?
-        // Minimal video settings (required by API but we only want audio)
-        .set_width(1)
+        .set_width(width)
         .map_err(|e| anyhow!("Failed to set width: {:?}", e))?
-        .set_height(1)
+        .set_height(height)
         .map_err(|e| anyhow!("Failed to set height: {:?}", e))?;
 
     // Set up WAV writer

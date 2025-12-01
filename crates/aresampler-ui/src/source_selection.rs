@@ -122,20 +122,26 @@ impl SelectItem for ProcessItem {
     }
 }
 
-/// State for the source selection component.
+/// A single source selection entry with its own dropdown state and selected process.
+pub struct SourceEntry {
+    /// Select dropdown state for this source
+    pub select_state: Entity<SelectState<SearchableVec<ProcessItem>>>,
+    /// Currently selected process for this source
+    pub selected_process: Option<ProcessItem>,
+}
+
+/// State for the source selection component, supporting multiple sources.
 pub struct SourceSelectionState {
     /// List of available audio sources
     pub processes: Vec<ProcessItem>,
-    /// Select dropdown state
-    pub select_state: Entity<SelectState<SearchableVec<ProcessItem>>>,
-    /// Currently selected process
-    pub selected_process: Option<ProcessItem>,
+    /// Multiple source entries (each with its own dropdown and selection)
+    pub sources: Vec<SourceEntry>,
     /// Icon cache: maps bundle_id (or name) to rendered icon
     icon_cache: HashMap<String, Arc<RenderImage>>,
 }
 
 impl SourceSelectionState {
-    /// Create a new source selection state.
+    /// Create a new source selection state with one initial source entry.
     pub fn new<V: 'static>(has_permission: bool, window: &mut Window, cx: &mut Context<V>) -> Self {
         // Initialize icon cache and enumerate processes
         let mut icon_cache = HashMap::new();
@@ -148,20 +154,60 @@ impl SourceSelectionState {
         } else {
             Vec::new()
         };
-        let searchable = SearchableVec::new(processes.clone());
 
-        // Create select state
+        // Create initial source entry
+        let searchable = SearchableVec::new(processes.clone());
         let select_state = cx.new(|cx| SelectState::new(searchable, None, window, cx));
+        let initial_source = SourceEntry {
+            select_state,
+            selected_process: None,
+        };
 
         Self {
             processes,
-            select_state,
-            selected_process: None,
+            sources: vec![initial_source],
             icon_cache,
         }
     }
 
-    /// Refresh the list of available processes.
+    /// Get the list of all selected PIDs.
+    pub fn selected_pids(&self) -> Vec<u32> {
+        self.sources
+            .iter()
+            .filter_map(|s| s.selected_process.as_ref().map(|p| p.pid))
+            .collect()
+    }
+
+    /// Add a new source entry and return its index.
+    pub fn add_source<V: 'static>(&mut self, window: &mut Window, cx: &mut Context<V>) -> usize {
+        // Create filtered list excluding already-selected processes
+        let selected_pids = self.selected_pids();
+        let filtered: Vec<ProcessItem> = self
+            .processes
+            .iter()
+            .filter(|p| !selected_pids.contains(&p.pid))
+            .cloned()
+            .collect();
+
+        let searchable = SearchableVec::new(filtered);
+        let select_state = cx.new(|cx| SelectState::new(searchable, None, window, cx));
+        let new_source = SourceEntry {
+            select_state,
+            selected_process: None,
+        };
+
+        self.sources.push(new_source);
+        self.sources.len() - 1
+    }
+
+    /// Remove a source entry by index.
+    pub fn remove_source(&mut self, index: usize) {
+        if index > 0 && index < self.sources.len() {
+            self.sources.remove(index);
+        }
+    }
+
+    /// Refresh the list of available processes and update all source dropdowns.
     pub fn refresh_processes<V: 'static>(&mut self, window: &mut Window, cx: &mut Context<V>) {
         // Use the icon cache to avoid re-decoding icons for known processes
         self.processes = enumerate_audio_sessions()
@@ -169,14 +215,56 @@ impl SourceSelectionState {
             .into_iter()
             .map(|info| ProcessItem::from_audio_session(info, &mut self.icon_cache))
             .collect();
-        let searchable = SearchableVec::new(self.processes.clone());
 
-        // Update select state with new items
-        self.select_state.update(cx, |state, _cx| {
-            state.set_items(searchable, window, _cx);
-        });
+        // Update each source's dropdown with filtered items
+        self.update_all_dropdowns(window, cx);
 
-        self.selected_process = None;
+        // Clear all selections
+        for source in &mut self.sources {
+            source.selected_process = None;
+        }
+    }
+
+    /// Refresh a specific source's dropdown, filtering out already-selected processes.
+    pub fn refresh_source_dropdown<V: 'static>(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<V>,
+    ) {
+        let selected_pids: Vec<u32> = self
+            .sources
+            .iter()
+            .enumerate()
+            .filter_map(|(i, s)| {
+                if i != index {
+                    s.selected_process.as_ref().map(|p| p.pid)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let filtered: Vec<ProcessItem> = self
+            .processes
+            .iter()
+            .filter(|p| !selected_pids.contains(&p.pid))
+            .cloned()
+            .collect();
+
+        if let Some(source) = self.sources.get(index) {
+            let searchable = SearchableVec::new(filtered);
+            source.select_state.update(cx, |state, cx| {
+                state.set_items(searchable, window, cx);
+            });
+        }
+    }
+
+    /// Update all dropdowns to filter out already-selected processes.
+    pub fn update_all_dropdowns<V: 'static>(&mut self, window: &mut Window, cx: &mut Context<V>) {
+        for i in 0..self.sources.len() {
+            self.refresh_source_dropdown(i, window, cx);
+        }
     }
 
     /// Find a process by PID.
@@ -184,17 +272,47 @@ impl SourceSelectionState {
         self.processes.iter().find(|p| p.pid == pid)
     }
 
-    /// Set the selected process.
-    pub fn set_selected(&mut self, process: ProcessItem) {
-        self.selected_process = Some(process);
+    /// Set the selected process for a specific source.
+    pub fn set_selected(&mut self, index: usize, process: ProcessItem) {
+        if let Some(source) = self.sources.get_mut(index) {
+            source.selected_process = Some(process);
+        }
     }
 
-    /// Clear the selection.
-    pub fn clear_selection<V: 'static>(&mut self, window: &mut Window, cx: &mut Context<V>) {
-        self.selected_process = None;
-        self.select_state.update(cx, |state, cx| {
-            state.set_selected_index(None, window, cx);
-        });
+    /// Clear the selection for a specific source.
+    pub fn clear_selection<V: 'static>(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<V>,
+    ) {
+        if let Some(source) = self.sources.get_mut(index) {
+            source.selected_process = None;
+            source.select_state.update(cx, |state, cx| {
+                state.set_selected_index(None, window, cx);
+            });
+        }
+    }
+
+    /// Clear all selections.
+    pub fn clear_all_selections<V: 'static>(&mut self, window: &mut Window, cx: &mut Context<V>) {
+        for i in 0..self.sources.len() {
+            self.clear_selection(i, window, cx);
+        }
+    }
+
+    /// Check if any source has a selection.
+    pub fn has_any_selection(&self) -> bool {
+        self.sources
+            .iter()
+            .any(|s| s.selected_process.is_some())
+    }
+
+    /// Get the first selected process (for backwards compatibility).
+    pub fn first_selected_process(&self) -> Option<&ProcessItem> {
+        self.sources
+            .first()
+            .and_then(|s| s.selected_process.as_ref())
     }
 }
 

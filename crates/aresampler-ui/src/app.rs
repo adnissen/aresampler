@@ -1,5 +1,7 @@
 use crate::playback::{load_samples_for_region, AudioPlayer};
-use crate::source_selection::{render_placeholder_icon, ProcessItem, SourceSelectionState};
+use crate::source_selection::{
+    render_placeholder_icon, ProcessItem, SourceEntry, SourceSelectionState,
+};
 use crate::waveform::{trim_wav_file, DragHandle, TrimSelection, WaveformData, WaveformView};
 use aresampler_core::{
     is_capture_available, request_capture_permission, CaptureConfig, CaptureEvent, CaptureSession,
@@ -140,28 +142,8 @@ impl AppState {
         // Initialize source selection state
         let source_selection = SourceSelectionState::new(has_permission, window, cx);
 
-        // Subscribe to select events
-        cx.subscribe(
-            &source_selection.select_state,
-            |this, _, event: &SelectEvent<SearchableVec<ProcessItem>>, cx| {
-                if let SelectEvent::Confirm(Some(pid)) = event {
-                    // Find the selected process by PID
-                    if let Some(process) = this.source_selection.find_process(*pid) {
-                        let process_clone = process.clone();
-                        this.source_selection.set_selected(process_clone.clone());
-                        this.error_message = None;
-
-                        // Start monitoring for this process if pre-roll is enabled
-                        if this.pre_roll_seconds > 0.0 {
-                            this.start_monitoring(&process_clone, cx);
-                        }
-
-                        cx.notify();
-                    }
-                }
-            },
-        )
-        .detach();
+        // Subscribe to the first source's select events
+        Self::subscribe_to_source(&source_selection.sources[0], 0, cx);
 
         Self {
             has_permission,
@@ -185,6 +167,51 @@ impl AppState {
             audio_player: AudioPlayer::new().ok(),
             is_playing: false,
         }
+    }
+
+    /// Subscribe to select events for a source entry.
+    fn subscribe_to_source(source: &SourceEntry, index: usize, cx: &mut Context<Self>) {
+        cx.subscribe(
+            &source.select_state,
+            move |this, _, event: &SelectEvent<SearchableVec<ProcessItem>>, cx| {
+                if let SelectEvent::Confirm(Some(pid)) = event {
+                    // Find the selected process by PID
+                    if let Some(process) = this.source_selection.find_process(*pid) {
+                        let process_clone = process.clone();
+                        this.source_selection
+                            .set_selected(index, process_clone.clone());
+                        this.error_message = None;
+
+                        // Update other dropdowns to filter out this selection
+                        // Note: This is handled in refresh_source_dropdown when dropdown opens
+
+                        // Start monitoring for the first source if pre-roll is enabled
+                        if index == 0 && this.pre_roll_seconds > 0.0 {
+                            this.start_monitoring(&process_clone, cx);
+                        }
+
+                        cx.notify();
+                    }
+                }
+            },
+        )
+        .detach();
+    }
+
+    /// Add a new source and subscribe to its events.
+    fn add_source(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let index = self.source_selection.add_source(window, cx);
+        let source = &self.source_selection.sources[index];
+        Self::subscribe_to_source(source, index, cx);
+        cx.notify();
+    }
+
+    /// Remove a source by index.
+    fn remove_source(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.source_selection.remove_source(index);
+        // Update all dropdowns after removal
+        self.source_selection.update_all_dropdowns(window, cx);
+        cx.notify();
     }
 
     fn request_permission(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -238,12 +265,18 @@ impl AppState {
         cx.notify();
     }
 
-    fn start_monitoring(&mut self, process: &ProcessItem, cx: &mut Context<Self>) {
+    fn start_monitoring(&mut self, _process: &ProcessItem, cx: &mut Context<Self>) {
         // Stop any existing monitoring/recording session
         self.stop_monitoring(cx);
 
+        // Get all selected PIDs
+        let pids = self.source_selection.selected_pids();
+        if pids.is_empty() {
+            return;
+        }
+
         let config = MonitorConfig {
-            pid: process.pid,
+            pids,
             pre_roll_duration_secs: self.pre_roll_seconds,
             ..Default::default()
         };
@@ -289,11 +322,13 @@ impl AppState {
             self.stop_playback(cx);
         }
 
-        let Some(process) = &self.source_selection.selected_process else {
+        // Get all selected PIDs
+        let pids = self.source_selection.selected_pids();
+        if pids.is_empty() {
             self.error_message = Some("Please select a process".into());
             cx.notify();
             return;
-        };
+        }
 
         let Some(path) = &self.output_path else {
             self.error_message = Some("Please select an output file".into());
@@ -326,7 +361,7 @@ impl AppState {
 
         // Direct recording mode (no monitoring)
         let config = CaptureConfig {
-            pid: process.pid,
+            pids,
             output_path: path.clone(),
             ..Default::default()
         };
@@ -580,11 +615,13 @@ impl AppState {
             self.stop_playback(cx);
         }
 
-        // Clear source selection
-        self.source_selection.selected_process = None;
-        self.source_selection.select_state.update(cx, |state, cx| {
-            state.set_selected_index(None, window, cx);
-        });
+        // Clear all source selections and reset to single source
+        self.source_selection.clear_all_selections(window, cx);
+        // Remove all sources except the first one
+        while self.source_selection.sources.len() > 1 {
+            self.source_selection
+                .remove_source(self.source_selection.sources.len() - 1);
+        }
 
         // Clear output path
         self.output_path = None;
@@ -759,7 +796,7 @@ impl Render for AppState {
                 .into_any_element();
         }
 
-        let can_record = self.source_selection.selected_process.is_some()
+        let can_record = self.source_selection.has_any_selection()
             && self.output_path.is_some()
             && !self.is_recording;
 
@@ -784,8 +821,8 @@ impl Render for AppState {
                 v_flex()
                     .flex_1()
                     .gap_0()
-                    // Source Selection Card
-                    .child(self.render_source_card(cx))
+                    // Source Selection Cards
+                    .child(self.render_sources_section(cx))
                     // Arrow divider between source and output
                     .child(self.render_arrow_divider())
                     // Output File Card
@@ -880,8 +917,9 @@ impl Render for AppState {
                                                                         // Not monitoring - start monitoring
                                                                         if let Some(process) = this
                                                                             .source_selection
-                                                                            .selected_process
-                                                                            .clone()
+                                                                            .first_selected_process(
+                                                                            )
+                                                                            .cloned()
                                                                         {
                                                                             this.start_monitoring(
                                                                                 &process, cx,
@@ -1082,9 +1120,78 @@ impl AppState {
             .child(div().flex_1().h(px(1.0)).bg(colors::border()))
     }
 
-    /// Render the source (application) selection card
-    fn render_source_card(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let has_selection = self.source_selection.selected_process.is_some();
+    /// Render the "+" divider between source cards
+    fn render_plus_divider(&self) -> impl IntoElement {
+        h_flex()
+            .w_full()
+            .px_4()
+            .items_center()
+            .gap_3()
+            // Left line segment
+            .child(div().flex_1().h(px(1.0)).bg(colors::border()))
+            // Plus icon in the middle
+            .child(div().text_sm().text_color(colors::text_muted()).child("+"))
+            // Right line segment
+            .child(div().flex_1().h(px(1.0)).bg(colors::border()))
+    }
+
+    /// Render all source selection cards plus the Add Source button.
+    fn render_sources_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let source_count = self.source_selection.sources.len();
+
+        v_flex()
+            .gap_0()
+            // Render each source card with "+" dividers between them
+            .children((0..source_count).flat_map(|index| {
+                let mut elements: Vec<gpui::AnyElement> = Vec::new();
+                // Add "+" divider before each card except the first
+                if index > 0 {
+                    elements.push(self.render_plus_divider().into_any_element());
+                }
+                elements.push(self.render_source_card(index, cx).into_any_element());
+                elements
+            }))
+            // Add Source button (only show if at least one source is selected and not recording)
+            .when(
+                self.source_selection.has_any_selection() && !self.is_recording,
+                |this| {
+                    this.child(
+                        div().px_4().pb_2().child(
+                            div()
+                                .id("add-source-button")
+                                .w_full()
+                                .py_2()
+                                .rounded(px(8.0))
+                                .border_1()
+                                .border_color(colors::border())
+                                .border_dashed()
+                                .cursor_pointer()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .gap_2()
+                                .text_sm()
+                                .text_color(colors::text_muted())
+                                .hover(|this| this.bg(colors::bg_tertiary()))
+                                .on_mouse_down(
+                                    gpui::MouseButton::Left,
+                                    cx.listener(|this, _, window, cx| {
+                                        this.add_source(window, cx);
+                                    }),
+                                )
+                                .child("+")
+                                .child("Add Source"),
+                        ),
+                    )
+                },
+            )
+    }
+
+    /// Render a single source (application) selection card
+    fn render_source_card(&self, index: usize, cx: &mut Context<Self>) -> impl IntoElement {
+        let source = &self.source_selection.sources[index];
+        let has_selection = source.selected_process.is_some();
+        let is_first = index == 0;
 
         div().px_4().py_3().child(
             // Container with relative positioning for the overlay
@@ -1107,25 +1214,23 @@ impl AppState {
                                 .gap_3()
                                 .items_center()
                                 // Icon
-                                .child(
-                                    if let Some(process) = &self.source_selection.selected_process {
-                                        if let Some(icon) = &process.icon {
-                                            div()
-                                                .size(px(28.0))
-                                                .rounded(px(6.0))
-                                                .overflow_hidden()
-                                                .child(
-                                                    img(ImageSource::Render(icon.clone()))
-                                                        .size(px(28.0)),
-                                                )
-                                                .into_any_element()
-                                        } else {
-                                            render_placeholder_icon().into_any_element()
-                                        }
+                                .child(if let Some(process) = &source.selected_process {
+                                    if let Some(icon) = &process.icon {
+                                        div()
+                                            .size(px(28.0))
+                                            .rounded(px(6.0))
+                                            .overflow_hidden()
+                                            .child(
+                                                img(ImageSource::Render(icon.clone()))
+                                                    .size(px(28.0)),
+                                            )
+                                            .into_any_element()
                                     } else {
                                         render_placeholder_icon().into_any_element()
-                                    },
-                                )
+                                    }
+                                } else {
+                                    render_placeholder_icon().into_any_element()
+                                })
                                 // Text content
                                 .child(
                                     v_flex()
@@ -1145,7 +1250,7 @@ impl AppState {
                                                     this.text_color(colors::text_muted())
                                                 })
                                                 .child(
-                                                    self.source_selection
+                                                    source
                                                         .selected_process
                                                         .as_ref()
                                                         .map(|p| p.name.clone())
@@ -1155,14 +1260,46 @@ impl AppState {
                                                 ),
                                         ),
                                 )
-                                // Chevron
-                                .child(div().text_color(colors::text_muted()).child("▼")),
+                                // Remove button (X) for non-first sources
+                                .when(!is_first, |this| {
+                                    this.child(
+                                        div()
+                                            .id(ElementId::Name(
+                                                format!("remove-source-{}", index).into(),
+                                            ))
+                                            .size(px(20.0))
+                                            .rounded(px(4.0))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .cursor_pointer()
+                                            .text_xs()
+                                            .text_color(colors::text_muted())
+                                            .hover(|this| {
+                                                this.bg(colors::bg_secondary())
+                                                    .text_color(colors::error_text())
+                                            })
+                                            .on_mouse_down(
+                                                gpui::MouseButton::Left,
+                                                cx.listener(move |this, _, window, cx| {
+                                                    this.remove_source(index, window, cx);
+                                                }),
+                                            )
+                                            .child("✕"),
+                                    )
+                                })
+                                // Chevron (only show for first source or sources without remove button context)
+                                .when(is_first, |this| {
+                                    this.child(div().text_color(colors::text_muted()).child("▼"))
+                                }),
                         ),
                 )
                 // Invisible Select overlay (handles click and dropdown)
                 .child(
                     div()
-                        .id("source-select-overlay")
+                        .id(ElementId::Name(
+                            format!("source-select-overlay-{}", index).into(),
+                        ))
                         .absolute()
                         .top_0()
                         .left_0()
@@ -1171,13 +1308,14 @@ impl AppState {
                         .cursor_pointer()
                         .on_mouse_down(
                             gpui::MouseButton::Left,
-                            cx.listener(|this, _, window, cx| {
-                                // Refresh processes before the dropdown opens
-                                this.refresh_processes(window, cx);
+                            cx.listener(move |this, _, window, cx| {
+                                // Refresh this source's dropdown before it opens
+                                this.source_selection
+                                    .refresh_source_dropdown(index, window, cx);
                             }),
                         )
                         .child(
-                            Select::new(&self.source_selection.select_state)
+                            Select::new(&source.select_state)
                                 .w_full()
                                 .h_full()
                                 .appearance(false)
