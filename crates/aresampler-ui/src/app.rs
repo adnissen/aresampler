@@ -8,7 +8,7 @@ use aresampler_core::{
     CaptureStats, MonitorConfig, PermissionStatus,
 };
 use gpui::{
-    div, img, point, prelude::FluentBuilder, px, relative, rgb, Bounds, Context, CursorStyle,
+    div, img, point, prelude::FluentBuilder, px, relative, rgb, Axis, Bounds, Context, CursorStyle,
     ElementId, FontWeight, ImageSource, InteractiveElement, IntoElement, MouseDownEvent,
     MouseMoveEvent, ParentElement, Pixels, Point, Render, Size, Styled, Window, WindowControlArea,
 };
@@ -16,7 +16,7 @@ use gpui_component::{
     button::{Button, ButtonVariants},
     h_flex,
     select::{SearchableVec, Select, SelectEvent},
-    v_flex,
+    v_flex, StyledExt,
 };
 use std::ops::DerefMut;
 use std::path::PathBuf;
@@ -820,6 +820,7 @@ impl Render for AppState {
             .child(
                 v_flex()
                     .flex_1()
+                    .pb_8()
                     .gap_0()
                     // Source Selection Cards
                     .child(self.render_sources_section(cx))
@@ -1011,22 +1012,24 @@ impl Render for AppState {
                                 .text_color(colors::error_text())
                                 .child(msg),
                         )
-                    }),
+                    })
+                    .scrollable(Axis::Vertical),
             )
             .into_any_element()
     }
 }
 
 impl AppState {
-    /// Render the header with app name (matches GPUI TitleBar: 34px height)
-    /// On macOS: 80px left padding for traffic lights, no right buttons
-    /// On Windows: no left padding, minimize/close buttons on right, draggable area
+    /// Render the header with app name (34px height)
+    /// On macOS: 80px left padding for traffic lights
+    /// On Windows: minimize/close buttons on right, draggable area
     fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let is_windows = cfg!(target_os = "windows");
 
         h_flex()
             .w_full()
-            .h(px(34.0)) // GPUI TITLE_BAR_HEIGHT
+            .h(px(34.0))
+            .flex_shrink_0()
             .border_b_1()
             .border_color(colors::border())
             // Draggable title area (contains label and fills remaining space)
