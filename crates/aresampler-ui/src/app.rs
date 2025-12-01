@@ -1127,12 +1127,13 @@ impl AppState {
             .px_4()
             .items_center()
             .gap_3()
-            // Left line segment
-            .child(div().flex_1().h(px(1.0)).bg(colors::border()))
+            .h(px(5.0))
+            // Left space segment
+            .child(div().flex_1().h(px(1.0)))
             // Plus icon in the middle
             .child(div().text_sm().text_color(colors::text_muted()).child("+"))
-            // Right line segment
-            .child(div().flex_1().h(px(1.0)).bg(colors::border()))
+            // Right space segment
+            .child(div().flex_1().h(px(1.0)))
     }
 
     /// Render all source selection cards plus the Add Source button.
