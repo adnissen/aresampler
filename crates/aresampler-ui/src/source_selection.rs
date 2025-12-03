@@ -232,6 +232,13 @@ impl SourceSelectionState {
         window: &mut Window,
         cx: &mut Context<V>,
     ) {
+        // Re-enumerate audio sessions to discover new apps
+        self.processes = enumerate_audio_sessions()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|info| ProcessItem::from_audio_session(info, &mut self.icon_cache))
+            .collect();
+
         let selected_pids: Vec<u32> = self
             .sources
             .iter()
@@ -303,9 +310,7 @@ impl SourceSelectionState {
 
     /// Check if any source has a selection.
     pub fn has_any_selection(&self) -> bool {
-        self.sources
-            .iter()
-            .any(|s| s.selected_process.is_some())
+        self.sources.iter().any(|s| s.selected_process.is_some())
     }
 
     /// Get the first selected process (for backwards compatibility).

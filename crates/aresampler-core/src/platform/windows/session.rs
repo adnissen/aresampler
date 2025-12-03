@@ -1,35 +1,23 @@
-//! Windows audio session enumeration using WASAPI
+//! Windows application enumeration using GUI window enumeration
+//!
+//! This approach enumerates all visible GUI applications, similar to how
+//! macOS ScreenCaptureKit returns all capturable applications.
 
 use crate::types::AudioSessionInfo;
 use anyhow::Result;
 use std::collections::HashSet;
-use std::thread;
 use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
-use wasapi::{DeviceCollection, Direction};
+use windows::Win32::Foundation::{BOOL, HWND, LPARAM};
+use windows::Win32::UI::WindowsAndMessaging::{
+    EnumWindows, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible,
+};
 
-/// Enumerate all processes with active WASAPI audio sessions
+/// Enumerate all GUI applications that could potentially produce audio
 ///
-/// This function spawns a separate thread because WASAPI requires COM in MTA mode,
-/// but GUI frameworks like GPUI initialize COM in STA mode.
+/// Returns a list of running applications with visible windows.
+/// This matches the macOS behavior where all capturable apps are shown,
+/// not just those currently playing audio.
 pub fn enumerate_audio_sessions() -> Result<Vec<AudioSessionInfo>> {
-    let handle = thread::spawn(enumerate_audio_sessions_impl);
-    handle
-        .join()
-        .map_err(|_| anyhow::anyhow!("Thread panicked"))?
-        .map_err(|e| e.into())
-}
-
-/// Internal implementation that must run in a thread with MTA COM initialization
-fn enumerate_audio_sessions_impl() -> Result<Vec<AudioSessionInfo>> {
-    // Initialize COM in MTA mode for WASAPI
-    let hr = wasapi::initialize_mta();
-    if hr.is_err() {
-        return Err(anyhow::anyhow!(
-            "Failed to initialize COM: HRESULT {:#x}",
-            hr.0
-        ));
-    }
-
     let mut sessions = Vec::new();
     let mut seen_pids: HashSet<u32> = HashSet::new();
 
@@ -37,68 +25,48 @@ fn enumerate_audio_sessions_impl() -> Result<Vec<AudioSessionInfo>> {
     let refresh = RefreshKind::new().with_processes(ProcessRefreshKind::everything());
     let sys = System::new_with_specifics(refresh);
 
-    // Enumerate render devices (audio output - what applications play)
-    let devices = DeviceCollection::new(&Direction::Render)?;
+    // Collect PIDs from visible windows
+    let mut window_pids: Vec<u32> = Vec::new();
 
-    for device in &devices {
-        let dev = match device {
-            Ok(d) => d,
-            Err(_) => continue,
-        };
+    unsafe {
+        // EnumWindows calls our callback for each top-level window
+        let _ = EnumWindows(
+            Some(enum_windows_callback),
+            LPARAM(&mut window_pids as *mut Vec<u32> as isize),
+        );
+    }
 
-        // Get the session manager for this device
-        let manager = match dev.get_iaudiosessionmanager() {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
+    // Process each unique PID
+    for pid in window_pids {
+        // Skip system PIDs
+        if pid == 0 || pid == 4 {
+            continue;
+        }
 
-        // Get the session enumerator
-        let enumerator = match manager.get_audiosessionenumerator() {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
+        // Skip already seen PIDs
+        if seen_pids.contains(&pid) {
+            continue;
+        }
+        seen_pids.insert(pid);
 
-        // Get session count
-        let count = match enumerator.get_count() {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
+        // Get process info
+        if let Some(process) = sys.process(Pid::from_u32(pid)) {
+            let name = process.name().to_string_lossy().to_string();
 
-        // Iterate through all sessions
-        for i in 0..count {
-            let control = match enumerator.get_session(i) {
-                Ok(c) => c,
-                Err(_) => continue,
-            };
-
-            let pid = match control.get_process_id() {
-                Ok(p) => p,
-                Err(_) => continue,
-            };
-
-            // Skip system sounds (PID 0)
-            if pid == 0 {
+            // Skip known system processes that shouldn't appear in the list
+            let name_lower = name.to_lowercase();
+            if is_system_process(&name_lower) {
                 continue;
             }
 
-            // Resolve to parent process
-            let resolved_pid = resolve_to_parent(&sys, pid);
+            let icon_png = process.exe().and_then(super::icon::get_app_icon_png);
 
-            // Skip already seen PIDs
-            if seen_pids.contains(&resolved_pid) {
-                continue;
-            }
-            seen_pids.insert(resolved_pid);
-
-            // Get process name
-            if let Some(process) = sys.process(Pid::from_u32(resolved_pid)) {
-                sessions.push(AudioSessionInfo {
-                    pid: resolved_pid,
-                    name: process.name().to_string_lossy().to_string(),
-                    bundle_id: None, // Windows doesn't have bundle IDs
-                    icon_png: None,  // Icons not implemented for Windows
-                });
-            }
+            sessions.push(AudioSessionInfo {
+                pid,
+                name,
+                bundle_id: None, // Windows doesn't have bundle IDs
+                icon_png,
+            });
         }
     }
 
@@ -108,45 +76,52 @@ fn enumerate_audio_sessions_impl() -> Result<Vec<AudioSessionInfo>> {
     Ok(sessions)
 }
 
-/// Resolve a PID to its parent process if appropriate
-fn resolve_to_parent(sys: &System, pid: u32) -> u32 {
-    let Some(process) = sys.process(Pid::from_u32(pid)) else {
-        return pid;
-    };
+/// Callback function for EnumWindows
+///
+/// Called for each top-level window. Filters for visible windows with titles
+/// and collects their process IDs.
+unsafe extern "system" fn enum_windows_callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    let pids = &mut *(lparam.0 as *mut Vec<u32>);
 
-    // Check if this process has a parent
-    let Some(parent_pid) = process.parent() else {
-        return pid;
-    };
-
-    // Get parent process info
-    let Some(parent) = sys.process(parent_pid) else {
-        return pid;
-    };
-
-    let parent_name = parent.name().to_string_lossy().to_lowercase();
-
-    // Don't resolve to system processes
-    if is_system_process(&parent_name) {
-        return pid;
+    // Skip invisible windows
+    if !IsWindowVisible(hwnd).as_bool() {
+        return BOOL(1); // Continue enumeration
     }
 
-    // Return the parent PID
-    parent_pid.as_u32()
+    // Skip windows without a title (likely background/system windows)
+    let title_len = GetWindowTextLengthW(hwnd);
+    if title_len == 0 {
+        return BOOL(1); // Continue enumeration
+    }
+
+    // Get the window title to verify it's a real window
+    let mut title_buf = vec![0u16; (title_len + 1) as usize];
+    let actual_len = GetWindowTextW(hwnd, &mut title_buf);
+    if actual_len == 0 {
+        return BOOL(1); // Continue enumeration
+    }
+
+    // Get the process ID for this window
+    let mut pid: u32 = 0;
+    GetWindowThreadProcessId(hwnd, Some(&mut pid));
+
+    if pid != 0 {
+        pids.push(pid);
+    }
+
+    BOOL(1) // Continue enumeration
 }
 
+/// Check if a process name is a known system process that shouldn't be shown
 fn is_system_process(name: &str) -> bool {
     matches!(
         name,
-        "explorer.exe"
-            | "svchost.exe"
-            | "services.exe"
-            | "system"
-            | "csrss.exe"
-            | "wininit.exe"
-            | "winlogon.exe"
-            | "dwm.exe"
-            | "sihost.exe"
-            | "taskhostw.exe"
+        "applicationframehost.exe"  // UWP app host
+            | "shellexperiencehost.exe"  // Windows shell
+            | "searchhost.exe"  // Windows search
+            | "startmenuexperiencehost.exe"  // Start menu
+            | "textinputhost.exe"  // Touch keyboard
+            | "lockapp.exe"  // Lock screen
+            | "systemsettings.exe" // Settings (internal)
     )
 }
