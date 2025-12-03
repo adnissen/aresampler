@@ -97,6 +97,7 @@ pub struct AppState {
 
     // Pre-roll / Monitoring state
     pre_roll_seconds: f32,
+    sample_rate: u32,
     is_monitoring: bool,
 
     // Recording state
@@ -150,7 +151,8 @@ impl AppState {
             permission_error,
             source_selection,
             output_path: None,
-            pre_roll_seconds: 10.0,
+            pre_roll_seconds: 0.0,
+            sample_rate: 44100,
             is_monitoring: false,
             is_recording: false,
             stats: CaptureStats::default(),
@@ -301,6 +303,7 @@ impl AppState {
 
         let config = MonitorConfig {
             pids,
+            sample_rate: self.sample_rate,
             pre_roll_duration_secs: self.pre_roll_seconds,
             ..Default::default()
         };
@@ -387,6 +390,7 @@ impl AppState {
         let config = CaptureConfig {
             pids,
             output_path: path.clone(),
+            sample_rate: self.sample_rate,
             ..Default::default()
         };
 
@@ -952,6 +956,108 @@ impl Render for AppState {
                                                                         }
                                                                     }
                                                                     this.pre_roll_seconds = value;
+                                                                    cx.notify();
+                                                                },
+                                                            ),
+                                                        )
+                                                    })
+                                                    .child(*label)
+                                            },
+                                        )),
+                                ),
+                        )
+                    })
+                    // Sample Rate Toggle Row (hidden after recording complete)
+                    .when(self.waveform_data.is_none() || self.is_recording, |this| {
+                        let sample_rate_options: [(u32, &str); 4] = [
+                            (44100, "44.1k"),
+                            (48000, "48k"),
+                            (88200, "88.2k"),
+                            (96000, "96k"),
+                        ];
+                        let current_sample_rate = self.sample_rate;
+                        let is_disabled = self.is_recording;
+
+                        this.child(
+                            h_flex()
+                                .px_4()
+                                .py_3()
+                                .items_center()
+                                .justify_between()
+                                .border_b_1()
+                                .border_color(colors::border())
+                                .child(
+                                    div()
+                                        .w(relative(0.5))
+                                        .relative()
+                                        .child(
+                                            div()
+                                                .top_neg_3()
+                                                .text_xs()
+                                                .text_color(colors::text_secondary())
+                                                .child("Sample rate"),
+                                        )
+                                        .child(
+                                            v_flex()
+                                                .absolute()
+                                                .top_1p5()
+                                                .left_0()
+                                                .w(relative(0.8))
+                                                .text_color(colors::text_muted())
+                                                .text_size(px(9.0))
+                                                .line_height(px(10.0))
+                                                .child("output audio quality"),
+                                        ),
+                                )
+                                .child(
+                                    h_flex()
+                                        .gap_1()
+                                        .p_1()
+                                        .bg(colors::bg_tertiary())
+                                        .rounded_md()
+                                        .children(sample_rate_options.iter().enumerate().map(
+                                            |(idx, (value, label))| {
+                                                let is_active = current_sample_rate == *value;
+                                                let value = *value;
+
+                                                div()
+                                                    .id(ElementId::Name(
+                                                        format!("samplerate_{}", idx).into(),
+                                                    ))
+                                                    .px_2()
+                                                    .py_1()
+                                                    .rounded(px(6.0))
+                                                    .text_xs()
+                                                    .cursor_pointer()
+                                                    .when(is_active, |this| {
+                                                        this.bg(colors::bg_secondary())
+                                                            .text_color(colors::accent())
+                                                    })
+                                                    .when(!is_active, |this| {
+                                                        this.text_color(colors::text_muted())
+                                                    })
+                                                    .when(is_disabled, |this| {
+                                                        this.opacity(0.5).cursor_not_allowed()
+                                                    })
+                                                    .when(!is_disabled, |this| {
+                                                        this.on_mouse_down(
+                                                            gpui::MouseButton::Left,
+                                                            cx.listener(
+                                                                move |this, _, _window, cx| {
+                                                                    this.sample_rate = value;
+                                                                    // Restart monitoring if active to apply new sample rate
+                                                                    if this.is_monitoring {
+                                                                        if let Some(process) = this
+                                                                            .source_selection
+                                                                            .first_selected_process(
+                                                                            )
+                                                                            .cloned()
+                                                                        {
+                                                                            this.start_monitoring(
+                                                                                &process, cx,
+                                                                            );
+                                                                        }
+                                                                    }
                                                                     cx.notify();
                                                                 },
                                                             ),
