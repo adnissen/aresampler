@@ -176,6 +176,14 @@ fn capture_thread_main(
     let _ = event_tx.send(CaptureEvent::Stopped);
 }
 
+/// Holds a WASAPI audio client and its capture client for one process
+struct AudioClientHandle {
+    audio_client: AudioClient,
+    capture_client: wasapi::AudioCaptureClient,
+    event_handle: wasapi::Handle,
+    audio_buffer: VecDeque<u8>,
+}
+
 fn run_capture(
     config: &CaptureConfig,
     command_rx: &Receiver<CaptureCommand>,
@@ -186,24 +194,12 @@ fn run_capture(
         return Err(anyhow!("No PIDs specified for capture"));
     }
 
-    // Windows WASAPI only supports single-PID capture, use the first one
-    // TODO: Support multiple PIDs by creating multiple loopback clients and mixing
-    let pid = config.pids[0];
-
-    // Validate that the process exists
-    if !process_exists(pid) {
-        return Err(anyhow!("Process with PID {} does not exist", pid));
+    // Validate that all processes exist
+    for &pid in &config.pids {
+        if !process_exists(pid) {
+            return Err(anyhow!("Process with PID {} does not exist", pid));
+        }
     }
-
-    // Create application loopback client
-    // Note: include_child_processes is now always true (hardcoded)
-    let mut audio_client =
-        AudioClient::new_application_loopback_client(pid, true).map_err(|e| {
-            anyhow!(
-                "Failed to create application loopback client: {}. Make sure the PID is valid.",
-                e
-            )
-        })?;
 
     // Define the desired audio format
     let block_align = (config.channels * config.bits_per_sample / 8) as u16;
@@ -224,21 +220,42 @@ fn run_capture(
         buffer_duration_hns,
     };
 
-    audio_client
-        .initialize_client(&desired_format, &Direction::Capture, &mode)
-        .map_err(|e| anyhow!("Failed to initialize audio client: {}", e))?;
+    // Create loopback clients for all PIDs
+    let mut clients: Vec<AudioClientHandle> = Vec::new();
+    for &pid in &config.pids {
+        let mut audio_client =
+            AudioClient::new_application_loopback_client(pid, true).map_err(|e| {
+                anyhow!(
+                    "Failed to create application loopback client for PID {}: {}",
+                    pid,
+                    e
+                )
+            })?;
 
-    // Get event handle
-    let event_handle = audio_client
-        .set_get_eventhandle()
-        .map_err(|e| anyhow!("Failed to get event handle: {}", e))?;
+        audio_client
+            .initialize_client(&desired_format, &Direction::Capture, &mode)
+            .map_err(|e| anyhow!("Failed to initialize audio client for PID {}: {}", pid, e))?;
 
-    // Get capture client
-    let capture_client = audio_client
-        .get_audiocaptureclient()
-        .map_err(|e| anyhow!("Failed to get audio capture client: {}", e))?;
+        let event_handle = audio_client
+            .set_get_eventhandle()
+            .map_err(|e| anyhow!("Failed to get event handle for PID {}: {}", pid, e))?;
 
-    let buffer_size = audio_client.get_buffer_size().unwrap_or(4800);
+        let capture_client = audio_client
+            .get_audiocaptureclient()
+            .map_err(|e| anyhow!("Failed to get audio capture client for PID {}: {}", pid, e))?;
+
+        clients.push(AudioClientHandle {
+            audio_client,
+            capture_client,
+            event_handle,
+            audio_buffer: VecDeque::new(),
+        });
+    }
+
+    let buffer_size = clients
+        .first()
+        .and_then(|c| c.audio_client.get_buffer_size().ok())
+        .unwrap_or(4800);
 
     // Notify UI that capture has started
     let _ = event_tx.send(CaptureEvent::Started {
@@ -263,18 +280,21 @@ fn run_capture(
     let mut wav_writer =
         WavWriter::new(buf_writer, wav_spec).context("Failed to create WAV writer")?;
 
-    // Start the stream
-    audio_client
-        .start_stream()
-        .map_err(|e| anyhow!("Failed to start audio stream: {}", e))?;
+    // Start all streams
+    for client in &clients {
+        client
+            .audio_client
+            .start_stream()
+            .map_err(|e| anyhow!("Failed to start audio stream: {}", e))?;
+    }
 
     let start_time = Instant::now();
     let mut total_frames: u64 = 0;
     let mut total_bytes: u64 = 0;
     let mut last_status_update = Instant::now();
-    let mut audio_buffer: VecDeque<u8> = VecDeque::new();
     #[allow(unused_assignments)]
     let mut current_buffer_frames = 0usize;
+    let mut mixed_samples: Vec<f32> = Vec::new();
 
     // Main capture loop
     loop {
@@ -290,94 +310,136 @@ fn run_capture(
             Err(_) => {}
         }
 
-        // Wait for audio data (timeout 100ms)
-        if event_handle.wait_for_event(100).is_err() {
+        // Wait for audio data from any client (timeout 100ms)
+        // We poll each client since we can't easily wait on multiple handles
+        let mut any_data = false;
+        for client in &clients {
+            if client.event_handle.wait_for_event(10).is_ok() {
+                any_data = true;
+                break;
+            }
+        }
+        if !any_data {
             continue;
         }
 
-        // Check how many frames are available
-        let frames_available = match capture_client.get_next_packet_size() {
-            Ok(Some(frames)) => frames,
-            Ok(None) => continue,
-            Err(_) => continue,
-        };
+        // Read from all clients and mix
+        mixed_samples.clear();
+        let mut max_samples = 0usize;
 
-        if frames_available == 0 {
+        for client in &mut clients {
+            // Check how many frames are available
+            let frames_available = match client.capture_client.get_next_packet_size() {
+                Ok(Some(frames)) => frames,
+                Ok(None) => continue,
+                Err(_) => continue,
+            };
+
+            if frames_available == 0 {
+                continue;
+            }
+
+            // Read available frames
+            client.audio_buffer.clear();
+            match client
+                .capture_client
+                .read_from_device_to_deque(&mut client.audio_buffer)
+            {
+                Ok(_buffer_flags) => {
+                    let num_bytes = client.audio_buffer.len();
+                    if num_bytes == 0 {
+                        continue;
+                    }
+
+                    let bytes = client.audio_buffer.make_contiguous();
+                    let samples = bytes_to_f32_samples(bytes);
+
+                    // Mix into the combined buffer
+                    if samples.len() > max_samples {
+                        // Extend mixed_samples to accommodate more samples
+                        mixed_samples.resize(samples.len(), 0.0);
+                        max_samples = samples.len();
+                    }
+
+                    for (i, &sample) in samples.iter().enumerate() {
+                        mixed_samples[i] += sample;
+                    }
+                }
+                Err(e) => {
+                    let err_str = format!("{}", e);
+                    if err_str.contains("AUDCLNT_S_BUFFER_EMPTY") || err_str.contains("0x08890001")
+                    {
+                        continue;
+                    }
+                    return Err(anyhow!("Error reading audio data: {}", e));
+                }
+            }
+        }
+
+        if mixed_samples.is_empty() {
             continue;
         }
 
-        // Read available frames
-        audio_buffer.clear();
-        match capture_client.read_from_device_to_deque(&mut audio_buffer) {
-            Ok(_buffer_flags) => {
-                let num_bytes = audio_buffer.len();
-                if num_bytes == 0 {
-                    continue;
-                }
+        // Clamp mixed samples to prevent clipping
+        for sample in &mut mixed_samples {
+            *sample = sample.clamp(-1.0, 1.0);
+        }
 
-                // Convert bytes to f32 samples and write to WAV
-                let bytes = audio_buffer.make_contiguous();
-                let samples = bytes_to_f32_samples(bytes);
+        // Write mixed samples to WAV
+        for &sample in &mixed_samples {
+            wav_writer
+                .write_sample(sample)
+                .context("Failed to write sample to WAV")?;
+        }
 
-                for &sample in samples {
-                    wav_writer
-                        .write_sample(sample)
-                        .context("Failed to write sample to WAV")?;
-                }
+        let num_bytes = mixed_samples.len() * 4;
+        let num_frames = num_bytes / block_align as usize;
+        total_frames += num_frames as u64;
+        total_bytes += num_bytes as u64;
+        current_buffer_frames = num_frames;
 
-                let num_frames = num_bytes / block_align as usize;
-                total_frames += num_frames as u64;
-                total_bytes += num_bytes as u64;
-                current_buffer_frames = num_frames;
-
-                // Update status every 100ms
-                if last_status_update.elapsed() >= Duration::from_millis(100) {
-                    let duration = start_time.elapsed();
-                    // Separate interleaved samples into channels and calculate RMS
-                    let num_channels = config.channels as usize;
-                    let left_samples: Vec<f32> =
-                        samples.iter().step_by(num_channels).copied().collect();
-                    let right_samples: Vec<f32> = if num_channels > 1 {
-                        samples
-                            .iter()
-                            .skip(1)
-                            .step_by(num_channels)
-                            .copied()
-                            .collect()
-                    } else {
-                        left_samples.clone()
-                    };
-                    let left_rms_db = calculate_rms_db(&left_samples);
-                    let right_rms_db = calculate_rms_db(&right_samples);
-                    let stats = CaptureStats {
-                        duration_secs: duration.as_secs_f64(),
-                        total_frames,
-                        file_size_bytes: total_bytes,
-                        buffer_frames: current_buffer_frames,
-                        is_recording: true,
-                        is_monitoring: false,
-                        pre_roll_buffer_secs: 0.0,
-                        left_rms_db,
-                        right_rms_db,
-                    };
-                    let _ = event_tx.send(CaptureEvent::StatsUpdate(stats));
-                    last_status_update = Instant::now();
-                }
-            }
-            Err(e) => {
-                let err_str = format!("{}", e);
-                if err_str.contains("AUDCLNT_S_BUFFER_EMPTY") || err_str.contains("0x08890001") {
-                    continue;
-                }
-                return Err(anyhow!("Error reading audio data: {}", e));
-            }
+        // Update status every 100ms
+        if last_status_update.elapsed() >= Duration::from_millis(100) {
+            let duration = start_time.elapsed();
+            // Separate interleaved samples into channels and calculate RMS
+            let num_channels = config.channels as usize;
+            let left_samples: Vec<f32> = mixed_samples
+                .iter()
+                .step_by(num_channels)
+                .copied()
+                .collect();
+            let right_samples: Vec<f32> = if num_channels > 1 {
+                mixed_samples
+                    .iter()
+                    .skip(1)
+                    .step_by(num_channels)
+                    .copied()
+                    .collect()
+            } else {
+                left_samples.clone()
+            };
+            let left_rms_db = calculate_rms_db(&left_samples);
+            let right_rms_db = calculate_rms_db(&right_samples);
+            let stats = CaptureStats {
+                duration_secs: duration.as_secs_f64(),
+                total_frames,
+                file_size_bytes: total_bytes,
+                buffer_frames: current_buffer_frames,
+                is_recording: true,
+                is_monitoring: false,
+                pre_roll_buffer_secs: 0.0,
+                left_rms_db,
+                right_rms_db,
+            };
+            let _ = event_tx.send(CaptureEvent::StatsUpdate(stats));
+            last_status_update = Instant::now();
         }
     }
 
-    // Stop the stream
-    audio_client
-        .stop_stream()
-        .map_err(|e| anyhow!("Failed to stop audio stream: {}", e))?;
+    // Stop all streams
+    for client in &clients {
+        let _ = client.audio_client.stop_stream();
+    }
 
     // Finalize the WAV file
     wav_writer
@@ -421,23 +483,12 @@ fn run_monitor(
         return Err(anyhow!("No PIDs specified for capture"));
     }
 
-    // Windows WASAPI only supports single-PID capture, use the first one
-    // TODO: Support multiple PIDs by creating multiple loopback clients and mixing
-    let pid = config.pids[0];
-
-    // Validate that the process exists
-    if !process_exists(pid) {
-        return Err(anyhow!("Process with PID {} does not exist", pid));
+    // Validate that all processes exist
+    for &pid in &config.pids {
+        if !process_exists(pid) {
+            return Err(anyhow!("Process with PID {} does not exist", pid));
+        }
     }
-
-    // Create application loopback client
-    let mut audio_client =
-        AudioClient::new_application_loopback_client(pid, true).map_err(|e| {
-            anyhow!(
-                "Failed to create application loopback client: {}. Make sure the PID is valid.",
-                e
-            )
-        })?;
 
     // Define the desired audio format
     let bits_per_sample = 32u16;
@@ -459,19 +510,37 @@ fn run_monitor(
         buffer_duration_hns,
     };
 
-    audio_client
-        .initialize_client(&desired_format, &Direction::Capture, &mode)
-        .map_err(|e| anyhow!("Failed to initialize audio client: {}", e))?;
+    // Create loopback clients for all PIDs
+    let mut clients: Vec<AudioClientHandle> = Vec::new();
+    for &pid in &config.pids {
+        let mut audio_client =
+            AudioClient::new_application_loopback_client(pid, true).map_err(|e| {
+                anyhow!(
+                    "Failed to create application loopback client for PID {}: {}",
+                    pid,
+                    e
+                )
+            })?;
 
-    // Get event handle
-    let event_handle = audio_client
-        .set_get_eventhandle()
-        .map_err(|e| anyhow!("Failed to get event handle: {}", e))?;
+        audio_client
+            .initialize_client(&desired_format, &Direction::Capture, &mode)
+            .map_err(|e| anyhow!("Failed to initialize audio client for PID {}: {}", pid, e))?;
 
-    // Get capture client
-    let capture_client = audio_client
-        .get_audiocaptureclient()
-        .map_err(|e| anyhow!("Failed to get audio capture client: {}", e))?;
+        let event_handle = audio_client
+            .set_get_eventhandle()
+            .map_err(|e| anyhow!("Failed to get event handle for PID {}: {}", pid, e))?;
+
+        let capture_client = audio_client
+            .get_audiocaptureclient()
+            .map_err(|e| anyhow!("Failed to get audio capture client for PID {}: {}", pid, e))?;
+
+        clients.push(AudioClientHandle {
+            audio_client,
+            capture_client,
+            event_handle,
+            audio_buffer: VecDeque::new(),
+        });
+    }
 
     // Create ring buffer for pre-roll
     let mut ring_buffer = AudioRingBuffer::new(
@@ -488,22 +557,25 @@ fn run_monitor(
         sample_format: SampleFormat::Float,
     };
 
-    // Start the stream
-    audio_client
-        .start_stream()
-        .map_err(|e| anyhow!("Failed to start audio stream: {}", e))?;
+    // Start all streams
+    for client in &clients {
+        client
+            .audio_client
+            .start_stream()
+            .map_err(|e| anyhow!("Failed to start audio stream: {}", e))?;
+    }
 
     // Notify that monitoring has started
     let _ = event_tx.send(CaptureEvent::MonitoringStarted);
 
     let start_time = Instant::now();
     let mut last_status_update = Instant::now();
-    let mut audio_buffer: VecDeque<u8> = VecDeque::new();
-    let mut mode = CaptureMode::Monitoring;
+    let mut capture_mode = CaptureMode::Monitoring;
     let mut wav_writer: Option<WavWriter<BufWriter<std::fs::File>>> = None;
     let mut total_frames: u64 = 0;
     let mut total_bytes: u64 = 0;
     let mut recording_start_time: Option<Instant> = None;
+    let mut mixed_samples: Vec<f32> = Vec::new();
 
     // Main capture loop
     loop {
@@ -527,7 +599,7 @@ fn run_monitor(
                 }
 
                 wav_writer = Some(writer);
-                mode = CaptureMode::Recording;
+                capture_mode = CaptureMode::Recording;
                 recording_start_time = Some(Instant::now());
                 total_frames = 0;
                 total_bytes = 0;
@@ -540,122 +612,161 @@ fn run_monitor(
             Err(_) => {}
         }
 
-        // Wait for audio data (timeout 100ms)
-        if event_handle.wait_for_event(100).is_err() {
+        // Wait for audio data from any client (timeout 100ms)
+        // We poll each client since we can't easily wait on multiple handles
+        let mut any_data = false;
+        for client in &clients {
+            if client.event_handle.wait_for_event(10).is_ok() {
+                any_data = true;
+                break;
+            }
+        }
+        if !any_data {
             continue;
         }
 
-        // Check how many frames are available
-        let frames_available = match capture_client.get_next_packet_size() {
-            Ok(Some(frames)) => frames,
-            Ok(None) => continue,
-            Err(_) => continue,
-        };
+        // Read from all clients and mix
+        mixed_samples.clear();
+        let mut max_samples = 0usize;
 
-        if frames_available == 0 {
+        for client in &mut clients {
+            // Check how many frames are available
+            let frames_available = match client.capture_client.get_next_packet_size() {
+                Ok(Some(frames)) => frames,
+                Ok(None) => continue,
+                Err(_) => continue,
+            };
+
+            if frames_available == 0 {
+                continue;
+            }
+
+            // Read available frames
+            client.audio_buffer.clear();
+            match client
+                .capture_client
+                .read_from_device_to_deque(&mut client.audio_buffer)
+            {
+                Ok(_buffer_flags) => {
+                    let num_bytes = client.audio_buffer.len();
+                    if num_bytes == 0 {
+                        continue;
+                    }
+
+                    let bytes = client.audio_buffer.make_contiguous();
+                    let samples = bytes_to_f32_samples(bytes);
+
+                    // Mix into the combined buffer
+                    if samples.len() > max_samples {
+                        mixed_samples.resize(samples.len(), 0.0);
+                        max_samples = samples.len();
+                    }
+
+                    for (i, &sample) in samples.iter().enumerate() {
+                        mixed_samples[i] += sample;
+                    }
+                }
+                Err(e) => {
+                    let err_str = format!("{}", e);
+                    if err_str.contains("AUDCLNT_S_BUFFER_EMPTY") || err_str.contains("0x08890001")
+                    {
+                        continue;
+                    }
+                    return Err(anyhow!("Error reading audio data: {}", e));
+                }
+            }
+        }
+
+        if mixed_samples.is_empty() {
             continue;
         }
 
-        // Read available frames
-        audio_buffer.clear();
-        match capture_client.read_from_device_to_deque(&mut audio_buffer) {
-            Ok(_buffer_flags) => {
-                let num_bytes = audio_buffer.len();
-                if num_bytes == 0 {
-                    continue;
-                }
+        // Clamp mixed samples to prevent clipping
+        for sample in &mut mixed_samples {
+            *sample = sample.clamp(-1.0, 1.0);
+        }
 
-                // Convert bytes to f32 samples
-                let bytes = audio_buffer.make_contiguous();
-                let samples = bytes_to_f32_samples(bytes);
+        let num_bytes = mixed_samples.len() * 4;
+        let num_frames = num_bytes / block_align as usize;
 
-                match mode {
-                    CaptureMode::Monitoring => {
-                        // Push to ring buffer
-                        ring_buffer.push(samples);
-                    }
-                    CaptureMode::Recording => {
-                        // Write to WAV file
-                        if let Some(ref mut writer) = wav_writer {
-                            for &sample in samples {
-                                writer
-                                    .write_sample(sample)
-                                    .context("Failed to write sample to WAV")?;
-                            }
-                        }
-                        let num_frames = num_bytes / block_align as usize;
-                        total_frames += num_frames as u64;
-                        total_bytes += num_bytes as u64;
+        match capture_mode {
+            CaptureMode::Monitoring => {
+                // Push to ring buffer
+                ring_buffer.push(&mixed_samples);
+            }
+            CaptureMode::Recording => {
+                // Write to WAV file
+                if let Some(ref mut writer) = wav_writer {
+                    for &sample in &mixed_samples {
+                        writer
+                            .write_sample(sample)
+                            .context("Failed to write sample to WAV")?;
                     }
                 }
-
-                let num_frames = num_bytes / block_align as usize;
-
-                // Update status every 100ms
-                if last_status_update.elapsed() >= Duration::from_millis(100) {
-                    let num_channels = config.channels as usize;
-                    let left_samples: Vec<f32> =
-                        samples.iter().step_by(num_channels).copied().collect();
-                    let right_samples: Vec<f32> = if num_channels > 1 {
-                        samples
-                            .iter()
-                            .skip(1)
-                            .step_by(num_channels)
-                            .copied()
-                            .collect()
-                    } else {
-                        left_samples.clone()
-                    };
-                    let left_rms_db = calculate_rms_db(&left_samples);
-                    let right_rms_db = calculate_rms_db(&right_samples);
-
-                    let stats = match mode {
-                        CaptureMode::Monitoring => CaptureStats {
-                            duration_secs: start_time.elapsed().as_secs_f64(),
-                            total_frames: 0,
-                            file_size_bytes: 0,
-                            buffer_frames: num_frames,
-                            is_recording: false,
-                            is_monitoring: true,
-                            pre_roll_buffer_secs: ring_buffer.duration_secs(),
-                            left_rms_db,
-                            right_rms_db,
-                        },
-                        CaptureMode::Recording => {
-                            let duration = recording_start_time
-                                .map(|t| t.elapsed().as_secs_f64())
-                                .unwrap_or(0.0);
-                            CaptureStats {
-                                duration_secs: duration,
-                                total_frames,
-                                file_size_bytes: total_bytes,
-                                buffer_frames: num_frames,
-                                is_recording: true,
-                                is_monitoring: false,
-                                pre_roll_buffer_secs: 0.0,
-                                left_rms_db,
-                                right_rms_db,
-                            }
-                        }
-                    };
-                    let _ = event_tx.send(CaptureEvent::StatsUpdate(stats));
-                    last_status_update = Instant::now();
-                }
+                total_frames += num_frames as u64;
+                total_bytes += num_bytes as u64;
             }
-            Err(e) => {
-                let err_str = format!("{}", e);
-                if err_str.contains("AUDCLNT_S_BUFFER_EMPTY") || err_str.contains("0x08890001") {
-                    continue;
+        }
+
+        // Update status every 100ms
+        if last_status_update.elapsed() >= Duration::from_millis(100) {
+            let num_channels = config.channels as usize;
+            let left_samples: Vec<f32> = mixed_samples
+                .iter()
+                .step_by(num_channels)
+                .copied()
+                .collect();
+            let right_samples: Vec<f32> = if num_channels > 1 {
+                mixed_samples
+                    .iter()
+                    .skip(1)
+                    .step_by(num_channels)
+                    .copied()
+                    .collect()
+            } else {
+                left_samples.clone()
+            };
+            let left_rms_db = calculate_rms_db(&left_samples);
+            let right_rms_db = calculate_rms_db(&right_samples);
+
+            let stats = match capture_mode {
+                CaptureMode::Monitoring => CaptureStats {
+                    duration_secs: start_time.elapsed().as_secs_f64(),
+                    total_frames: 0,
+                    file_size_bytes: 0,
+                    buffer_frames: num_frames,
+                    is_recording: false,
+                    is_monitoring: true,
+                    pre_roll_buffer_secs: ring_buffer.duration_secs(),
+                    left_rms_db,
+                    right_rms_db,
+                },
+                CaptureMode::Recording => {
+                    let duration = recording_start_time
+                        .map(|t| t.elapsed().as_secs_f64())
+                        .unwrap_or(0.0);
+                    CaptureStats {
+                        duration_secs: duration,
+                        total_frames,
+                        file_size_bytes: total_bytes,
+                        buffer_frames: num_frames,
+                        is_recording: true,
+                        is_monitoring: false,
+                        pre_roll_buffer_secs: 0.0,
+                        left_rms_db,
+                        right_rms_db,
+                    }
                 }
-                return Err(anyhow!("Error reading audio data: {}", e));
-            }
+            };
+            let _ = event_tx.send(CaptureEvent::StatsUpdate(stats));
+            last_status_update = Instant::now();
         }
     }
 
-    // Stop the stream
-    audio_client
-        .stop_stream()
-        .map_err(|e| anyhow!("Failed to stop audio stream: {}", e))?;
+    // Stop all streams
+    for client in &clients {
+        let _ = client.audio_client.stop_stream();
+    }
 
     // Finalize WAV file if we were recording
     if let Some(writer) = wav_writer {

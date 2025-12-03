@@ -185,8 +185,11 @@ impl AppState {
                         // Update other dropdowns to filter out this selection
                         // Note: This is handled in refresh_source_dropdown when dropdown opens
 
-                        // Start monitoring for the first source if pre-roll is enabled
-                        if index == 0 && this.pre_roll_seconds > 0.0 {
+                        // Restart monitoring when any source changes to ensure all sources
+                        // are captured in the pre-roll buffer with aligned timing
+                        if this.pre_roll_seconds > 0.0
+                            && !this.source_selection.selected_pids().is_empty()
+                        {
                             this.start_monitoring(&process_clone, cx);
                         }
 
@@ -203,6 +206,12 @@ impl AppState {
         let index = self.source_selection.add_source(window, cx);
         let source = &self.source_selection.sources[index];
         Self::subscribe_to_source(source, index, cx);
+
+        // Restart monitoring to include all current sources with aligned timing
+        // Note: The new source isn't selected yet, but when it is, subscribe_to_source
+        // will restart monitoring. This handles the case where user adds a source
+        // while already monitoring - the new source will be included once selected.
+
         cx.notify();
     }
 
@@ -211,6 +220,21 @@ impl AppState {
         self.source_selection.remove_source(index);
         // Update all dropdowns after removal
         self.source_selection.update_all_dropdowns(window, cx);
+
+        // Restart monitoring with remaining sources to clear pre-roll buffer
+        // and ensure timing alignment
+        if self.is_monitoring && self.pre_roll_seconds > 0.0 {
+            let pids = self.source_selection.selected_pids();
+            if !pids.is_empty() {
+                if let Some(process) = self.source_selection.sources[0].selected_process.clone() {
+                    self.start_monitoring(&process, cx);
+                }
+            } else {
+                // No sources left, stop monitoring
+                self.stop_monitoring(cx);
+            }
+        }
+
         cx.notify();
     }
 
