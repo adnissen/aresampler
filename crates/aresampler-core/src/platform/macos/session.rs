@@ -8,7 +8,7 @@ use screencapturekit::shareable_content::SCShareableContent;
 /// Enumerate all applications that can be captured on macOS
 ///
 /// Returns a list of running applications that can potentially produce audio.
-/// Note: Unlike Windows WASAPI which only shows apps actively using audio,
+
 /// ScreenCaptureKit returns all capturable applications.
 pub fn enumerate_audio_sessions() -> Result<Vec<AudioSessionInfo>> {
     let content = SCShareableContent::get().map_err(|e| {
