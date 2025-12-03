@@ -635,19 +635,13 @@ impl AppState {
         .detach();
     }
 
-    fn reset_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn reset_session(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         // Stop any active playback
         if self.is_playing {
             self.stop_playback(cx);
         }
 
-        // Clear all source selections and reset to single source
-        self.source_selection.clear_all_selections(window, cx);
-        // Remove all sources except the first one
-        while self.source_selection.sources.len() > 1 {
-            self.source_selection
-                .remove_source(self.source_selection.sources.len() - 1);
-        }
+        // Keep the current sources - don't clear selections or remove sources
 
         // Clear output path
         self.output_path = None;
@@ -665,6 +659,41 @@ impl AppState {
         // Clear any error messages
         self.error_message = None;
 
+        // Restart monitoring with the existing sources
+        self.restart_monitoring(cx);
+
+        cx.notify();
+    }
+
+    fn restart_monitoring(&mut self, cx: &mut Context<Self>) {
+        // Get all selected PIDs
+        let pids = self.source_selection.selected_pids();
+        if pids.is_empty() {
+            return;
+        }
+
+        let config = MonitorConfig {
+            pids,
+            sample_rate: self.sample_rate,
+            pre_roll_duration_secs: self.pre_roll_seconds,
+            ..Default::default()
+        };
+
+        let mut session = CaptureSession::new_empty();
+        match session.start_monitoring(config) {
+            Ok(rx) => {
+                self.event_receiver = Some(rx);
+                self.capture_session = Some(session);
+                self.is_monitoring = true;
+                self.is_recording = false;
+                self.error_message = None;
+                self.stats = CaptureStats::default();
+                self.captured_pre_roll_secs = 0.0;
+            }
+            Err(e) => {
+                self.error_message = Some(format!("Failed to start monitoring: {}", e));
+            }
+        }
         cx.notify();
     }
 
