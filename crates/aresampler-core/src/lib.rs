@@ -47,7 +47,7 @@ pub mod types;
 // Re-export all public types from types module
 pub use types::{
     AudioSessionInfo, CaptureCommand, CaptureConfig, CaptureEvent, CaptureStats, MonitorConfig,
-    PermissionStatus, ProcessInfo,
+    PermissionStatus, ProcessInfo, SourceStats,
 };
 
 // Re-export ring buffer

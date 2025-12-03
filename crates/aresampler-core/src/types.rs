@@ -69,6 +69,17 @@ impl Default for MonitorConfig {
     }
 }
 
+/// Per-source audio statistics
+#[derive(Clone, Debug, Default)]
+pub struct SourceStats {
+    /// Process ID this stat belongs to
+    pub pid: u32,
+    /// Left channel RMS level in dB (0 dB = full scale, -60 dB = silence)
+    pub left_rms_db: f32,
+    /// Right channel RMS level in dB (0 dB = full scale, -60 dB = silence)
+    pub right_rms_db: f32,
+}
+
 /// Real-time statistics during capture
 #[derive(Clone, Debug)]
 pub struct CaptureStats {
@@ -85,6 +96,8 @@ pub struct CaptureStats {
     pub left_rms_db: f32,
     /// Right channel RMS level in dB (0 dB = full scale, -60 dB = silence)
     pub right_rms_db: f32,
+    /// Per-source volume levels (empty if unavailable, e.g., macOS multi-app)
+    pub per_source_stats: Vec<SourceStats>,
 }
 
 impl Default for CaptureStats {
@@ -99,6 +112,7 @@ impl Default for CaptureStats {
             pre_roll_buffer_secs: 0.0,
             left_rms_db: -60.0,
             right_rms_db: -60.0,
+            per_source_stats: Vec::new(),
         }
     }
 }

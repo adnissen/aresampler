@@ -2,7 +2,9 @@
 
 use crate::process::process_exists;
 use crate::ring_buffer::AudioRingBuffer;
-use crate::types::{CaptureCommand, CaptureConfig, CaptureEvent, CaptureStats, MonitorConfig};
+use crate::types::{
+    CaptureCommand, CaptureConfig, CaptureEvent, CaptureStats, MonitorConfig, SourceStats,
+};
 use anyhow::{anyhow, Context, Result};
 use core_media_rs::cm_sample_buffer::CMSampleBuffer;
 use hound::{SampleFormat, WavSpec, WavWriter};
@@ -181,6 +183,8 @@ struct AudioOutputState {
     start_time: Instant,
     last_status_update: Instant,
     event_tx: Sender<CaptureEvent>,
+    /// PIDs being captured (for per-source stats)
+    pids: Vec<u32>,
 }
 
 /// Shared state for the monitoring audio handler
@@ -197,6 +201,8 @@ struct MonitorOutputState {
     total_frames: u64,
     total_bytes: u64,
     recording_start_time: Option<Instant>,
+    /// PIDs being captured (for per-source stats)
+    pids: Vec<u32>,
 }
 
 /// Handler for receiving audio samples from ScreenCaptureKit
@@ -275,6 +281,19 @@ impl SCStreamOutputTrait for AudioHandler {
                 .get(1)
                 .map(|s| calculate_rms_db(s))
                 .unwrap_or(-60.0);
+
+            // Per-source stats: only available for single app capture
+            // (multi-app capture produces pre-mixed audio from ScreenCaptureKit)
+            let per_source_stats = if state.pids.len() == 1 {
+                vec![SourceStats {
+                    pid: state.pids[0],
+                    left_rms_db,
+                    right_rms_db,
+                }]
+            } else {
+                Vec::new()
+            };
+
             let stats = CaptureStats {
                 duration_secs: duration.as_secs_f64(),
                 total_frames: state.total_frames,
@@ -285,6 +304,7 @@ impl SCStreamOutputTrait for AudioHandler {
                 pre_roll_buffer_secs: 0.0,
                 left_rms_db,
                 right_rms_db,
+                per_source_stats,
             };
             let _ = state.event_tx.send(CaptureEvent::StatsUpdate(stats));
             state.last_status_update = Instant::now();
@@ -377,6 +397,18 @@ impl SCStreamOutputTrait for MonitorAudioHandler {
                 .map(|s| calculate_rms_db(s))
                 .unwrap_or(-60.0);
 
+            // Per-source stats: only available for single app capture
+            // (multi-app capture produces pre-mixed audio from ScreenCaptureKit)
+            let per_source_stats = if state.pids.len() == 1 {
+                vec![SourceStats {
+                    pid: state.pids[0],
+                    left_rms_db,
+                    right_rms_db,
+                }]
+            } else {
+                Vec::new()
+            };
+
             let stats = match state.mode {
                 CaptureMode::Monitoring => CaptureStats {
                     duration_secs: state.start_time.elapsed().as_secs_f64(),
@@ -388,6 +420,7 @@ impl SCStreamOutputTrait for MonitorAudioHandler {
                     pre_roll_buffer_secs: state.ring_buffer.duration_secs(),
                     left_rms_db,
                     right_rms_db,
+                    per_source_stats: per_source_stats.clone(),
                 },
                 CaptureMode::Recording => {
                     let duration = state
@@ -404,6 +437,7 @@ impl SCStreamOutputTrait for MonitorAudioHandler {
                         pre_roll_buffer_secs: 0.0,
                         left_rms_db,
                         right_rms_db,
+                        per_source_stats,
                     }
                 }
             };
@@ -552,6 +586,7 @@ fn run_monitor(
         total_frames: 0,
         total_bytes: 0,
         recording_start_time: None,
+        pids: config.pids.clone(),
     }));
 
     let stop_flag = Arc::new(AtomicBool::new(false));
@@ -760,6 +795,7 @@ fn run_capture(
         start_time: Instant::now(),
         last_status_update: Instant::now(),
         event_tx: event_tx.clone(),
+        pids: config.pids.clone(),
     }));
 
     let stop_flag = Arc::new(AtomicBool::new(false));

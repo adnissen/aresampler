@@ -2,7 +2,9 @@
 
 use crate::process::process_exists;
 use crate::ring_buffer::AudioRingBuffer;
-use crate::types::{CaptureCommand, CaptureConfig, CaptureEvent, CaptureStats, MonitorConfig};
+use crate::types::{
+    CaptureCommand, CaptureConfig, CaptureEvent, CaptureStats, MonitorConfig, SourceStats,
+};
 use anyhow::{anyhow, Context, Result};
 use hound::{SampleFormat, WavSpec, WavWriter};
 use std::collections::VecDeque;
@@ -326,8 +328,10 @@ fn run_capture(
         // Read from all clients and mix
         mixed_samples.clear();
         let mut max_samples = 0usize;
+        // Store per-source samples for RMS calculation
+        let mut per_source_samples: Vec<(u32, Vec<f32>)> = Vec::new();
 
-        for client in &mut clients {
+        for (client_idx, client) in clients.iter_mut().enumerate() {
             // Check how many frames are available
             let frames_available = match client.capture_client.get_next_packet_size() {
                 Ok(Some(frames)) => frames,
@@ -353,6 +357,9 @@ fn run_capture(
 
                     let bytes = client.audio_buffer.make_contiguous();
                     let samples = bytes_to_f32_samples(bytes);
+
+                    // Store samples for per-source RMS calculation
+                    per_source_samples.push((config.pids[client_idx], samples.to_vec()));
 
                     // Mix into the combined buffer
                     if samples.len() > max_samples {
@@ -420,6 +427,30 @@ fn run_capture(
             };
             let left_rms_db = calculate_rms_db(&left_samples);
             let right_rms_db = calculate_rms_db(&right_samples);
+
+            // Calculate per-source RMS
+            let per_source_stats: Vec<SourceStats> = per_source_samples
+                .iter()
+                .map(|(pid, samples)| {
+                    let left: Vec<f32> = samples.iter().step_by(num_channels).copied().collect();
+                    let right: Vec<f32> = if num_channels > 1 {
+                        samples
+                            .iter()
+                            .skip(1)
+                            .step_by(num_channels)
+                            .copied()
+                            .collect()
+                    } else {
+                        left.clone()
+                    };
+                    SourceStats {
+                        pid: *pid,
+                        left_rms_db: calculate_rms_db(&left),
+                        right_rms_db: calculate_rms_db(&right),
+                    }
+                })
+                .collect();
+
             let stats = CaptureStats {
                 duration_secs: duration.as_secs_f64(),
                 total_frames,
@@ -430,6 +461,7 @@ fn run_capture(
                 pre_roll_buffer_secs: 0.0,
                 left_rms_db,
                 right_rms_db,
+                per_source_stats,
             };
             let _ = event_tx.send(CaptureEvent::StatsUpdate(stats));
             last_status_update = Instant::now();
@@ -628,8 +660,10 @@ fn run_monitor(
         // Read from all clients and mix
         mixed_samples.clear();
         let mut max_samples = 0usize;
+        // Store per-source samples for RMS calculation
+        let mut per_source_samples: Vec<(u32, Vec<f32>)> = Vec::new();
 
-        for client in &mut clients {
+        for (client_idx, client) in clients.iter_mut().enumerate() {
             // Check how many frames are available
             let frames_available = match client.capture_client.get_next_packet_size() {
                 Ok(Some(frames)) => frames,
@@ -655,6 +689,9 @@ fn run_monitor(
 
                     let bytes = client.audio_buffer.make_contiguous();
                     let samples = bytes_to_f32_samples(bytes);
+
+                    // Store samples for per-source RMS calculation
+                    per_source_samples.push((config.pids[client_idx], samples.to_vec()));
 
                     // Mix into the combined buffer
                     if samples.len() > max_samples {
@@ -729,6 +766,29 @@ fn run_monitor(
             let left_rms_db = calculate_rms_db(&left_samples);
             let right_rms_db = calculate_rms_db(&right_samples);
 
+            // Calculate per-source RMS
+            let per_source_stats: Vec<SourceStats> = per_source_samples
+                .iter()
+                .map(|(pid, samples)| {
+                    let left: Vec<f32> = samples.iter().step_by(num_channels).copied().collect();
+                    let right: Vec<f32> = if num_channels > 1 {
+                        samples
+                            .iter()
+                            .skip(1)
+                            .step_by(num_channels)
+                            .copied()
+                            .collect()
+                    } else {
+                        left.clone()
+                    };
+                    SourceStats {
+                        pid: *pid,
+                        left_rms_db: calculate_rms_db(&left),
+                        right_rms_db: calculate_rms_db(&right),
+                    }
+                })
+                .collect();
+
             let stats = match capture_mode {
                 CaptureMode::Monitoring => CaptureStats {
                     duration_secs: start_time.elapsed().as_secs_f64(),
@@ -740,6 +800,7 @@ fn run_monitor(
                     pre_roll_buffer_secs: ring_buffer.duration_secs(),
                     left_rms_db,
                     right_rms_db,
+                    per_source_stats: per_source_stats.clone(),
                 },
                 CaptureMode::Recording => {
                     let duration = recording_start_time
@@ -755,6 +816,7 @@ fn run_monitor(
                         pre_roll_buffer_secs: 0.0,
                         left_rms_db,
                         right_rms_db,
+                        per_source_stats,
                     }
                 }
             };

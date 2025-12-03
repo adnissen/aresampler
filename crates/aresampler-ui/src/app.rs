@@ -187,11 +187,9 @@ impl AppState {
                         // Update other dropdowns to filter out this selection
                         // Note: This is handled in refresh_source_dropdown when dropdown opens
 
-                        // Restart monitoring when any source changes to ensure all sources
-                        // are captured in the pre-roll buffer with aligned timing
-                        if this.pre_roll_seconds > 0.0
-                            && !this.source_selection.selected_pids().is_empty()
-                        {
+                        // Start/restart monitoring when any source changes to ensure all sources
+                        // are captured with aligned timing (for pre-roll and level metering)
+                        if !this.source_selection.selected_pids().is_empty() {
                             this.start_monitoring(&process_clone, cx);
                         }
 
@@ -225,7 +223,7 @@ impl AppState {
 
         // Restart monitoring with remaining sources to clear pre-roll buffer
         // and ensure timing alignment
-        if self.is_monitoring && self.pre_roll_seconds > 0.0 {
+        if self.is_monitoring {
             let pids = self.source_selection.selected_pids();
             if !pids.is_empty() {
                 if let Some(process) = self.source_selection.sources[0].selected_process.clone() {
@@ -926,13 +924,8 @@ impl Render for AppState {
                                                             gpui::MouseButton::Left,
                                                             cx.listener(
                                                                 move |this, _, _window, cx| {
-                                                                    if value == 0.0
-                                                                        && this.is_monitoring
-                                                                    {
-                                                                        // Turning off pre-roll - stop monitoring
-                                                                        this.stop_monitoring(cx);
-                                                                    } else if this.is_monitoring {
-                                                                        // Already monitoring - resize the buffer
+                                                                    if this.is_monitoring {
+                                                                        // Already monitoring - resize the buffer (works for 0 too)
                                                                         if let Some(session) =
                                                                             &mut this
                                                                                 .capture_session
@@ -942,8 +935,12 @@ impl Render for AppState {
                                                                                     value,
                                                                                 );
                                                                         }
-                                                                    } else if value > 0.0 {
-                                                                        // Not monitoring - start monitoring
+                                                                    } else if !this
+                                                                        .source_selection
+                                                                        .selected_pids()
+                                                                        .is_empty()
+                                                                    {
+                                                                        // Not monitoring but has sources - start monitoring
                                                                         if let Some(process) = this
                                                                             .source_selection
                                                                             .first_selected_process(
@@ -1285,9 +1282,11 @@ impl AppState {
                 elements.push(self.render_source_card(index, cx).into_any_element());
                 elements
             }))
-            // Add Source button (only show if at least one source is selected and not recording)
+            // Add Source button (only show if at least one source is selected, not recording, and no waveform)
             .when(
-                self.source_selection.has_any_selection() && !self.is_recording,
+                self.source_selection.has_any_selection()
+                    && !self.is_recording
+                    && self.waveform_data.is_none(),
                 |this| {
                     this.child(
                         div().px_4().pb_2().child(
@@ -1327,11 +1326,26 @@ impl AppState {
         let has_selection = source.selected_process.is_some();
         let is_first = index == 0;
 
+        // Get level for this source (if available)
+        let source_level = self.get_source_level(index);
+        let is_active = self.stats.is_monitoring || self.stats.is_recording;
+        let has_waveform = self.waveform_data.is_some();
+        let is_locked = has_waveform || self.is_recording;
+
+        // Label text changes based on state
+        let label_text = if has_waveform {
+            "RECORDED FROM"
+        } else {
+            "RECORDING FROM"
+        };
+
         div().px_4().py_3().child(
             // Container with relative positioning for the overlay
             div()
                 .relative()
                 .w_full()
+                // Grey out when recording or waveform is displayed
+                .when(is_locked, |this| this.opacity(0.5))
                 .child(
                     // Custom styled card (visual only)
                     div()
@@ -1344,131 +1358,193 @@ impl AppState {
                             this.border_1().border_color(colors::border())
                         })
                         .child(
-                            h_flex()
-                                .gap_3()
-                                .items_center()
-                                // Icon
-                                .child(if let Some(process) = &source.selected_process {
-                                    if let Some(icon) = &process.icon {
-                                        div()
-                                            .size(px(28.0))
-                                            .rounded(px(6.0))
-                                            .overflow_hidden()
-                                            .child(
-                                                img(ImageSource::Render(icon.clone()))
-                                                    .size(px(28.0)),
-                                            )
-                                            .into_any_element()
-                                    } else {
-                                        render_placeholder_icon().into_any_element()
-                                    }
-                                } else {
-                                    render_placeholder_icon().into_any_element()
-                                })
-                                // Text content
+                            v_flex()
+                                .gap_2()
+                                // Top row: icon, text, buttons
                                 .child(
-                                    v_flex()
-                                        .flex_1()
-                                        .gap(px(2.0))
+                                    h_flex()
+                                        .gap_3()
+                                        .items_center()
+                                        // Icon
+                                        .child(if let Some(process) = &source.selected_process {
+                                            if let Some(icon) = &process.icon {
+                                                div()
+                                                    .size(px(28.0))
+                                                    .rounded(px(6.0))
+                                                    .overflow_hidden()
+                                                    .child(
+                                                        img(ImageSource::Render(icon.clone()))
+                                                            .size(px(28.0)),
+                                                    )
+                                                    .into_any_element()
+                                            } else {
+                                                render_placeholder_icon().into_any_element()
+                                            }
+                                        } else {
+                                            render_placeholder_icon().into_any_element()
+                                        })
+                                        // Text content
                                         .child(
-                                            div()
-                                                .text_xs()
-                                                .text_color(colors::text_muted())
-                                                .child("RECORDING FROM"),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_sm()
-                                                .font_weight(FontWeight::MEDIUM)
-                                                .when(!has_selection, |this| {
-                                                    this.text_color(colors::text_muted())
-                                                })
+                                            v_flex()
+                                                .flex_1()
+                                                .overflow_hidden()
+                                                .gap(px(2.0))
                                                 .child(
-                                                    source
-                                                        .selected_process
-                                                        .as_ref()
-                                                        .map(|p| p.name.clone())
-                                                        .unwrap_or_else(|| {
-                                                            "Select application...".to_string()
-                                                        }),
+                                                    div()
+                                                        .text_xs()
+                                                        .text_color(colors::text_muted())
+                                                        .child(label_text),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .text_sm()
+                                                        .font_weight(FontWeight::MEDIUM)
+                                                        .overflow_hidden()
+                                                        .text_ellipsis()
+                                                        .when(!has_selection, |this| {
+                                                            this.text_color(colors::text_muted())
+                                                        })
+                                                        .child(
+                                                            source
+                                                                .selected_process
+                                                                .as_ref()
+                                                                .map(|p| p.name.clone())
+                                                                .unwrap_or_else(|| {
+                                                                    "Select application..."
+                                                                        .to_string()
+                                                                }),
+                                                        ),
                                                 ),
-                                        ),
-                                )
-                                // Remove button (X) for non-first sources
-                                .when(!is_first, |this| {
-                                    this.child(
-                                        div()
-                                            .id(ElementId::Name(
-                                                format!("remove-source-{}", index).into(),
-                                            ))
-                                            .size(px(20.0))
-                                            .rounded(px(4.0))
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .cursor_pointer()
-                                            .text_xs()
-                                            .text_color(colors::text_muted())
-                                            .hover(|this| {
-                                                this.bg(colors::bg_secondary())
-                                                    .text_color(colors::error_text())
-                                            })
-                                            .on_mouse_down(
-                                                gpui::MouseButton::Left,
-                                                cx.listener(move |this, _, window, cx| {
-                                                    this.remove_source(index, window, cx);
-                                                }),
+                                        )
+                                        // Remove button (X) for non-first sources (hide when locked)
+                                        .when(!is_first && !is_locked, |this| {
+                                            this.child(
+                                                div()
+                                                    .id(ElementId::Name(
+                                                        format!("remove-source-{}", index).into(),
+                                                    ))
+                                                    .size(px(20.0))
+                                                    .rounded(px(4.0))
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .cursor_pointer()
+                                                    .text_xs()
+                                                    .text_color(colors::text_muted())
+                                                    .hover(|this| {
+                                                        this.bg(colors::bg_secondary())
+                                                            .text_color(colors::error_text())
+                                                    })
+                                                    .on_mouse_down(
+                                                        gpui::MouseButton::Left,
+                                                        cx.listener(move |this, _, window, cx| {
+                                                            this.remove_source(index, window, cx);
+                                                        }),
+                                                    )
+                                                    .child("✕"),
                                             )
-                                            .child("✕"),
-                                    )
-                                })
-                                // Chevron (only show for first source or sources without remove button context)
-                                .when(is_first, |this| {
-                                    this.child(div().text_color(colors::text_muted()).child("▼"))
+                                        })
+                                        // Chevron (only show for first source, hide when locked)
+                                        .when(is_first && !is_locked, |this| {
+                                            this.child(
+                                                div().text_color(colors::text_muted()).child("▼"),
+                                            )
+                                        }),
+                                )
+                                // Level meter (inside the card, below the content row) - hide when waveform displayed (but show during recording)
+                                .when(has_selection && is_active && !has_waveform, |this| {
+                                    this.child(self.render_level_meter(source_level))
                                 }),
                         ),
                 )
-                // Invisible Select overlay (handles click and dropdown)
-                .child(
-                    div()
-                        .id(ElementId::Name(
-                            format!("source-select-overlay-{}", index).into(),
-                        ))
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .w_full()
-                        .h_full()
-                        .cursor_pointer()
-                        .on_mouse_down(
-                            gpui::MouseButton::Left,
-                            cx.listener(move |this, _, window, cx| {
-                                // Refresh this source's dropdown before it opens
-                                this.source_selection
-                                    .refresh_source_dropdown(index, window, cx);
-                            }),
-                        )
-                        .child(
-                            Select::new(&source.select_state)
-                                .w_full()
-                                .h_full()
-                                .appearance(false)
-                                .opacity(0.0)
-                                .placeholder("Select application..."),
-                        ),
-                ),
+                // Invisible Select overlay (handles click and dropdown) - disable when locked
+                .when(!is_locked, |this| {
+                    this.child(
+                        div()
+                            .id(ElementId::Name(
+                                format!("source-select-overlay-{}", index).into(),
+                            ))
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .w_full()
+                            .h_full()
+                            .cursor_pointer()
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(move |this, _, window, cx| {
+                                    // Refresh this source's dropdown before it opens
+                                    this.source_selection
+                                        .refresh_source_dropdown(index, window, cx);
+                                }),
+                            )
+                            .child(
+                                Select::new(&source.select_state)
+                                    .w_full()
+                                    .h_full()
+                                    .appearance(false)
+                                    .opacity(0.0)
+                                    .placeholder("Select application..."),
+                            ),
+                    )
+                }),
         )
+    }
+
+    /// Get the level for a specific source by index
+    fn get_source_level(&self, index: usize) -> f32 {
+        let source = &self.source_selection.sources[index];
+        if let Some(process) = &source.selected_process {
+            // Try to find per-source stats for this PID
+            if let Some(source_stat) = self
+                .stats
+                .per_source_stats
+                .iter()
+                .find(|s| s.pid == process.pid)
+            {
+                return (source_stat.left_rms_db + source_stat.right_rms_db) / 2.0;
+            }
+        }
+        // Fallback to combined level
+        (self.stats.left_rms_db + self.stats.right_rms_db) / 2.0
+    }
+
+    /// Render a horizontal level meter
+    fn render_level_meter(&self, level_db: f32) -> impl IntoElement {
+        // Map -60dB to 0dB => 0.0 to 1.0
+        let normalized = ((level_db + 60.0) / 60.0).clamp(0.0, 1.0);
+
+        // Meter bar container
+        div()
+            .w_full()
+            .h(px(4.0))
+            .rounded(px(2.0))
+            .bg(colors::bg_secondary())
+            .overflow_hidden()
+            .child(
+                // Filled portion - always green
+                div()
+                    .h_full()
+                    .w(relative(normalized))
+                    .rounded(px(2.0))
+                    .bg(colors::success()),
+            )
     }
 
     /// Render the output file selection card
     fn render_output_card(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let has_output = self.output_path.is_some();
+        let has_waveform = self.waveform_data.is_some();
+        let is_locked = has_waveform || self.is_recording;
         let output_name = self
             .output_path
             .as_ref()
             .and_then(|p| p.file_name())
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "Choose destination...".to_string());
+
+        // Label text changes based on state
+        let label_text = if has_waveform { "SAVED AS" } else { "SAVE TO" };
 
         div()
             .px_4()
@@ -1482,17 +1558,20 @@ impl AppState {
                     .px_3()
                     .py_2()
                     .rounded(px(10.0))
-                    .cursor_pointer()
+                    // Grey out and disable interaction when locked (recording or waveform displayed)
+                    .when(is_locked, |this| this.opacity(0.5))
+                    .when(!is_locked, |this| {
+                        this.cursor_pointer().on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(|this, _, window, cx| {
+                                this.browse_output(window, cx);
+                            }),
+                        )
+                    })
                     .when(has_output, |this| this.bg(colors::bg_tertiary()))
                     .when(!has_output, |this| {
                         this.border_1().border_color(colors::border())
                     })
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(|this, _, window, cx| {
-                            this.browse_output(window, cx);
-                        }),
-                    )
                     .child(
                         h_flex()
                             .gap_3()
@@ -1508,7 +1587,7 @@ impl AppState {
                                         div()
                                             .text_xs()
                                             .text_color(colors::text_muted())
-                                            .child("SAVE TO"),
+                                            .child(label_text),
                                     )
                                     .child(
                                         div()
@@ -1520,8 +1599,10 @@ impl AppState {
                                             .child(output_name),
                                     ),
                             )
-                            // Chevron
-                            .child(div().text_color(colors::text_muted()).child("▼")),
+                            // Chevron (hide when locked)
+                            .when(!is_locked, |this| {
+                                this.child(div().text_color(colors::text_muted()).child("▼"))
+                            }),
                     ),
             )
     }
@@ -1557,27 +1638,25 @@ impl AppState {
             "{:.1} MB",
             self.stats.file_size_bytes as f64 / (1024.0 * 1024.0)
         );
-        // Average the left and right RMS for a single level display
-        let level = (self.stats.left_rms_db + self.stats.right_rms_db) / 2.0;
-        let level_str = format!("{:.0} dB", level);
 
         h_flex()
             .px_4()
             .py_3()
-            .gap_2()
+            .gap_3()
+            .justify_center()
             .border_b_1()
             .border_color(colors::border())
             // Duration stat
             .child(
                 v_flex()
-                    .flex_1()
+                    .w(px(120.0))
                     .items_center()
-                    .p_2()
+                    .p_3()
                     .bg(colors::bg_tertiary())
                     .rounded_md()
                     .child(
                         div()
-                            .text_sm()
+                            .text_base()
                             .font_weight(FontWeight::MEDIUM)
                             .child(duration),
                     )
@@ -1591,39 +1670,22 @@ impl AppState {
             // Size stat
             .child(
                 v_flex()
-                    .flex_1()
+                    .w(px(120.0))
                     .items_center()
-                    .p_2()
-                    .bg(colors::bg_tertiary())
-                    .rounded_md()
-                    .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(size))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(colors::text_muted())
-                            .child("Size"),
-                    ),
-            )
-            // Level stat
-            .child(
-                v_flex()
-                    .flex_1()
-                    .items_center()
-                    .p_2()
+                    .p_3()
                     .bg(colors::bg_tertiary())
                     .rounded_md()
                     .child(
                         div()
-                            .text_sm()
+                            .text_base()
                             .font_weight(FontWeight::MEDIUM)
-                            .text_color(colors::success())
-                            .child(level_str),
+                            .child(size),
                     )
                     .child(
                         div()
                             .text_xs()
                             .text_color(colors::text_muted())
-                            .child("Level"),
+                            .child("Size"),
                     ),
             )
     }
