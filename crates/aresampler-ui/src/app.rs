@@ -1,16 +1,17 @@
-use crate::playback::{load_samples_for_region, AudioPlayer};
+use crate::playback::AudioPlayer;
 use crate::source_selection::{
     render_placeholder_icon, ProcessItem, SourceEntry, SourceSelectionState,
 };
-use crate::waveform::{trim_wav_file, DragHandle, TrimSelection, WaveformData, WaveformView};
+use crate::waveform::{trim_wav_file, DragHandle, TrimSelection, WaveformData};
+use crate::waveform_display::{self, WaveformDisplayState};
 use aresampler_core::{
     is_capture_available, request_capture_permission, CaptureConfig, CaptureEvent, CaptureSession,
     CaptureStats, MonitorConfig, PermissionStatus,
 };
 use gpui::{
-    div, img, point, prelude::FluentBuilder, px, relative, rgb, Axis, Bounds, Context, CursorStyle,
-    ElementId, FontWeight, ImageSource, InteractiveElement, IntoElement, MouseDownEvent,
-    MouseMoveEvent, ParentElement, Pixels, Point, Render, Size, Styled, Window, WindowControlArea,
+    div, img, prelude::FluentBuilder, px, relative, rgb, Axis, Bounds, Context, ElementId,
+    FontWeight, ImageSource, InteractiveElement, IntoElement, ParentElement, Pixels, Render,
+    Styled, Window, WindowControlArea,
 };
 use gpui_component::{
     button::{Button, ButtonVariants},
@@ -18,7 +19,6 @@ use gpui_component::{
     select::{SearchableVec, Select, SelectEvent},
     v_flex, StyledExt,
 };
-use std::ops::DerefMut;
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use std::sync::Arc;
@@ -125,6 +125,57 @@ pub struct AppState {
     // Audio playback state
     audio_player: Option<AudioPlayer>,
     is_playing: bool,
+}
+
+/// Implementation of WaveformDisplayState trait for AppState
+impl WaveformDisplayState for AppState {
+    fn waveform_data(&self) -> Option<&Arc<WaveformData>> {
+        self.waveform_data.as_ref()
+    }
+
+    fn trim_selection(&self) -> &TrimSelection {
+        &self.trim_selection
+    }
+
+    fn trim_selection_mut(&mut self) -> &mut TrimSelection {
+        &mut self.trim_selection
+    }
+
+    fn dragging_handle(&self) -> Option<DragHandle> {
+        self.dragging_handle
+    }
+
+    fn set_dragging_handle(&mut self, handle: Option<DragHandle>) {
+        self.dragging_handle = handle;
+    }
+
+    fn waveform_bounds(&self) -> Option<Bounds<Pixels>> {
+        self.waveform_bounds
+    }
+
+    fn set_waveform_bounds(&mut self, bounds: Option<Bounds<Pixels>>) {
+        self.waveform_bounds = bounds;
+    }
+
+    fn is_playing(&self) -> bool {
+        self.is_playing
+    }
+
+    fn set_is_playing(&mut self, playing: bool) {
+        self.is_playing = playing;
+    }
+
+    fn output_path(&self) -> Option<&PathBuf> {
+        self.output_path.as_ref()
+    }
+
+    fn audio_player(&self) -> Option<&AudioPlayer> {
+        self.audio_player.as_ref()
+    }
+
+    fn set_error_message(&mut self, msg: Option<String>) {
+        self.error_message = msg;
+    }
 }
 
 impl AppState {
@@ -509,74 +560,6 @@ impl AppState {
         });
     }
 
-    fn toggle_playback(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        if self.is_playing {
-            self.stop_playback(cx);
-        } else {
-            self.start_playback(cx);
-        }
-    }
-
-    fn start_playback(&mut self, cx: &mut Context<Self>) {
-        let Some(path) = &self.output_path else {
-            self.error_message = Some("No output file to play".into());
-            cx.notify();
-            return;
-        };
-
-        let Some(player) = &self.audio_player else {
-            self.error_message = Some("Audio playback not available".into());
-            cx.notify();
-            return;
-        };
-
-        // Load samples for the selected region
-        match load_samples_for_region(path, self.trim_selection.start, self.trim_selection.end) {
-            Ok((samples, sample_rate, channels)) => {
-                player.play_samples(samples, sample_rate, channels);
-                self.is_playing = true;
-                self.error_message = None;
-
-                // Schedule a check to detect when playback finishes
-                cx.spawn(async move |this, mut cx| loop {
-                    cx.background_executor()
-                        .timer(std::time::Duration::from_millis(100))
-                        .await;
-                    let should_stop = this
-                        .update(cx.deref_mut(), |state, _cx| {
-                            if let Some(player) = &state.audio_player {
-                                player.is_empty()
-                            } else {
-                                true
-                            }
-                        })
-                        .unwrap_or(true);
-
-                    if should_stop {
-                        let _ = this.update(cx.deref_mut(), |state, cx| {
-                            state.is_playing = false;
-                            cx.notify();
-                        });
-                        break;
-                    }
-                })
-                .detach();
-            }
-            Err(e) => {
-                self.error_message = Some(format!("Failed to load audio: {}", e));
-            }
-        }
-        cx.notify();
-    }
-
-    fn stop_playback(&mut self, cx: &mut Context<Self>) {
-        if let Some(player) = &self.audio_player {
-            player.stop();
-        }
-        self.is_playing = false;
-        cx.notify();
-    }
-
     fn cut_audio(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let Some(path) = self.output_path.clone() else {
             self.error_message = Some("No output file selected".into());
@@ -585,7 +568,7 @@ impl AppState {
         };
 
         // Stop any active playback first
-        self.stop_playback(cx);
+        waveform_display::stop_playback(self, cx);
 
         let start = self.trim_selection.start;
         let end = self.trim_selection.end;
@@ -640,7 +623,7 @@ impl AppState {
     fn reset_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // Stop any active playback
         if self.is_playing {
-            self.stop_playback(cx);
+            waveform_display::stop_playback(self, cx);
         }
 
         // Clear all source selections and reset to single source
@@ -667,99 +650,6 @@ impl AppState {
         // Clear any error messages
         self.error_message = None;
 
-        cx.notify();
-    }
-
-    fn handle_waveform_mouse_down(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
-        let Some(bounds) = self.waveform_bounds else {
-            return;
-        };
-
-        let x: f32 = position.x.into();
-        let origin_x: f32 = bounds.origin.x.into();
-        let width: f32 = bounds.size.width.into();
-
-        if width <= 0.0 {
-            return;
-        }
-
-        let normalized = ((x - origin_x) / width).clamp(0.0, 1.0);
-
-        // Determine which handle to drag based on proximity
-        let start_x = self.trim_selection.start;
-        let end_x = self.trim_selection.end;
-
-        let dist_to_start = (normalized - start_x).abs();
-        let dist_to_end = (normalized - end_x).abs();
-
-        // Use a hit threshold of 3% of the width
-        let threshold = 0.03;
-
-        if dist_to_start < threshold && dist_to_start <= dist_to_end {
-            self.dragging_handle = Some(DragHandle::Start);
-        } else if dist_to_end < threshold {
-            self.dragging_handle = Some(DragHandle::End);
-        } else if normalized < start_x {
-            // Clicked before start handle - move start handle
-            self.dragging_handle = Some(DragHandle::Start);
-            self.trim_selection.start = normalized;
-        } else if normalized > end_x {
-            // Clicked after end handle - move end handle
-            self.dragging_handle = Some(DragHandle::End);
-            self.trim_selection.end = normalized;
-        } else {
-            // Clicked between handles - determine closest
-            if dist_to_start < dist_to_end {
-                self.dragging_handle = Some(DragHandle::Start);
-            } else {
-                self.dragging_handle = Some(DragHandle::End);
-            }
-        }
-
-        // Stop playback when handles are dragged
-        if self.is_playing {
-            self.stop_playback(cx);
-        }
-
-        cx.notify();
-    }
-
-    fn handle_waveform_mouse_move(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
-        let Some(handle) = self.dragging_handle else {
-            return;
-        };
-
-        let Some(bounds) = self.waveform_bounds else {
-            return;
-        };
-
-        let x: f32 = position.x.into();
-        let origin_x: f32 = bounds.origin.x.into();
-        let width: f32 = bounds.size.width.into();
-
-        if width <= 0.0 {
-            return;
-        }
-
-        let normalized = ((x - origin_x) / width).clamp(0.0, 1.0);
-
-        // Minimum gap between handles (2%)
-        let min_gap = 0.02;
-
-        match handle {
-            DragHandle::Start => {
-                self.trim_selection.start = normalized.min(self.trim_selection.end - min_gap);
-            }
-            DragHandle::End => {
-                self.trim_selection.end = normalized.max(self.trim_selection.start + min_gap);
-            }
-        }
-
-        cx.notify();
-    }
-
-    fn handle_waveform_mouse_up(&mut self, cx: &mut Context<Self>) {
-        self.dragging_handle = None;
         cx.notify();
     }
 }
@@ -1117,7 +1007,13 @@ impl Render for AppState {
                     })
                     // Waveform Section (shown after recording)
                     .when_some(self.waveform_data.clone(), |this, data| {
-                        this.child(self.render_waveform_section(data, cx))
+                        this.child(waveform_display::render_waveform_section(
+                            self,
+                            data,
+                            |state, window, cx| state.cut_audio(window, cx),
+                            |state, window, cx| state.reset_session(window, cx),
+                            cx,
+                        ))
                     })
                     .when(self.waveform_loading, |this| {
                         this.child(
@@ -1624,169 +1520,6 @@ impl AppState {
                             .text_xs()
                             .text_color(colors::text_muted())
                             .child("Level"),
-                    ),
-            )
-    }
-
-    /// Render the waveform section with time display and controls
-    fn render_waveform_section(
-        &self,
-        data: Arc<WaveformData>,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let trim_selection = self.trim_selection.clone();
-        let is_modified = self.trim_selection.is_modified();
-        let duration = data.duration_secs;
-
-        // Calculate times based on trim selection
-        let start_time = format!(
-            "{}:{:02}",
-            (duration * self.trim_selection.start as f64) as u32 / 60,
-            (duration * self.trim_selection.start as f64) as u32 % 60
-        );
-        let current_time = format!(
-            "{}:{:02}",
-            (duration * 0.75) as u32 / 60,
-            (duration * 0.75) as u32 % 60
-        );
-        let end_time = format!(
-            "{}:{:02}",
-            (duration * self.trim_selection.end as f64) as u32 / 60,
-            (duration * self.trim_selection.end as f64) as u32 % 60
-        );
-
-        v_flex()
-            .px_4()
-            .py_3()
-            .gap_3()
-            // Waveform container
-            .child(
-                div()
-                    .id("waveform-container")
-                    .h(px(80.0))
-                    .w_full()
-                    .rounded(px(10.0))
-                    .overflow_hidden()
-                    .cursor(CursorStyle::ResizeLeftRight)
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                            let viewport = window.viewport_size();
-                            let padding: f32 = 16.0;
-                            let viewport_width: f32 = viewport.width.into();
-                            let waveform_width = viewport_width - (padding * 2.0);
-                            let bounds = Bounds {
-                                origin: point(px(padding), event.position.y - px(40.0)),
-                                size: Size {
-                                    width: px(waveform_width),
-                                    height: px(80.0),
-                                },
-                            };
-                            this.waveform_bounds = Some(bounds);
-                            this.handle_waveform_mouse_down(event.position, cx);
-                        }),
-                    )
-                    .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
-                        this.handle_waveform_mouse_move(event.position, cx);
-                    }))
-                    .on_mouse_up(
-                        gpui::MouseButton::Left,
-                        cx.listener(|this, _, _window, cx| {
-                            this.handle_waveform_mouse_up(cx);
-                        }),
-                    )
-                    .child(
-                        WaveformView::new(data)
-                            .with_trim_selection(trim_selection)
-                            .render(),
-                    ),
-            )
-            // Time display row
-            .child(
-                h_flex()
-                    .justify_between()
-                    .text_xs()
-                    .text_color(colors::text_muted())
-                    .child(start_time)
-                    .child(div().text_color(colors::accent()).child(current_time))
-                    .child(end_time),
-            )
-            // Control buttons
-            .child(
-                h_flex()
-                    .gap_2()
-                    // Play button (icon only)
-                    .child(
-                        div()
-                            .id("play-button")
-                            .size(px(44.0))
-                            .rounded(px(10.0))
-                            .bg(colors::bg_tertiary())
-                            .border_1()
-                            .border_color(colors::border())
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .on_mouse_down(
-                                gpui::MouseButton::Left,
-                                cx.listener(|this, _, window, cx| {
-                                    this.toggle_playback(window, cx);
-                                }),
-                            )
-                            .child(
-                                div()
-                                    .text_color(colors::text_secondary())
-                                    .child(if self.is_playing { "⏹" } else { "▶" }),
-                            ),
-                    )
-                    // Cut Selection button
-                    .child(
-                        div()
-                            .id("cut-button")
-                            .flex_1()
-                            .py_3()
-                            .rounded(px(10.0))
-                            .bg(colors::bg_tertiary())
-                            .border_1()
-                            .border_color(colors::border())
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .text_sm()
-                            .text_color(colors::text_secondary())
-                            .when(!is_modified, |this| this.opacity(0.5).cursor_not_allowed())
-                            .when(is_modified, |this| {
-                                this.on_mouse_down(
-                                    gpui::MouseButton::Left,
-                                    cx.listener(|this, _, window, cx| {
-                                        this.cut_audio(window, cx);
-                                    }),
-                                )
-                            })
-                            .child("Cut Selection"),
-                    )
-                    // Reset button (icon only, same size as play button)
-                    .child(
-                        div()
-                            .id("reset-button")
-                            .size(px(44.0))
-                            .rounded(px(10.0))
-                            .bg(colors::bg_tertiary())
-                            .border_1()
-                            .border_color(colors::border())
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .on_mouse_down(
-                                gpui::MouseButton::Left,
-                                cx.listener(|this, _, window, cx| {
-                                    this.reset_session(window, cx);
-                                }),
-                            )
-                            .child(div().text_color(colors::text_secondary()).child("↺")),
                     ),
             )
     }

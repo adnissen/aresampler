@@ -6,6 +6,7 @@ mod app;
 mod playback;
 mod source_selection;
 mod waveform;
+mod waveform_display;
 
 fn main() -> Result<()> {
     // Initialize the GPUI application
