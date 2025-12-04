@@ -58,8 +58,8 @@ pub use process::{get_parent_pid, get_process_info, process_exists};
 
 // Re-export platform-specific implementations through a unified API
 pub use platform::{
-    enumerate_audio_sessions, initialize_audio, is_capture_available, request_capture_permission,
-    CaptureSession,
+    enumerate_audio_sessions, get_app_icon_png, initialize_audio, is_capture_available,
+    request_capture_permission, CaptureSession,
 };
 
 // Re-export error types

@@ -3,10 +3,10 @@
 //! This module provides the `ProcessItem` type for representing audio sources and
 //! the `SourceSelectionState` struct for managing source selection state.
 
-use aresampler_core::{enumerate_audio_sessions, AudioSessionInfo};
+use aresampler_core::{AudioSessionInfo, enumerate_audio_sessions, get_app_icon_png};
 use gpui::{
-    div, img, prelude::FluentBuilder, px, AnyElement, App, AppContext, Context, Entity,
-    ImageSource, IntoElement, ParentElement, RenderImage, SharedString, Styled, Window,
+    AnyElement, App, AppContext, Context, Entity, ImageSource, IntoElement, ParentElement,
+    RenderImage, SharedString, Styled, Window, div, img, prelude::FluentBuilder, px,
 };
 use gpui_component::{
     h_flex,
@@ -33,21 +33,41 @@ pub struct ProcessItem {
 
 impl ProcessItem {
     /// Create a ProcessItem from AudioSessionInfo, using the icon cache for efficiency.
-    /// If the icon is not in the cache, it will be decoded and added.
+    /// Icons are fetched on-demand and cached to avoid repeated slow OS calls.
     pub fn from_audio_session(
         info: AudioSessionInfo,
-        icon_cache: &mut HashMap<String, Arc<RenderImage>>,
+        icon_cache: &mut HashMap<String, Option<Arc<RenderImage>>>,
     ) -> Self {
-        // Use bundle_id as cache key, fall back to name if no bundle_id
-        let cache_key = info.bundle_id.clone().unwrap_or_else(|| info.name.clone());
+        // Use bundle_id or exe_path as cache key, fall back to name
+        let cache_key = info
+            .bundle_id
+            .clone()
+            .or_else(|| info.exe_path.clone())
+            .unwrap_or_else(|| info.name.clone());
 
-        // Check cache first
+        // Check cache first (includes cached None for apps without icons)
         let icon = if let Some(cached_icon) = icon_cache.get(&cache_key) {
-            Some(cached_icon.clone())
+            cached_icon.clone()
         } else {
-            // Not in cache - decode and cache it
-            let new_icon = info.icon_png.and_then(|png_bytes| {
-                let img = image::load_from_memory(&png_bytes).ok()?;
+            // Not in cache - fetch the icon (slow operation, but only once per app)
+            #[cfg(target_os = "macos")]
+            let png_bytes = info
+                .bundle_id
+                .as_ref()
+                .and_then(|bid| get_app_icon_png(bid));
+
+            #[cfg(target_os = "windows")]
+            let png_bytes = info
+                .exe_path
+                .as_ref()
+                .and_then(|path| get_app_icon_png(std::path::Path::new(path)));
+
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+            let png_bytes: Option<Vec<u8>> = None;
+
+            // Decode PNG to RenderImage
+            let new_icon = png_bytes.and_then(|bytes| {
+                let img = image::load_from_memory(&bytes).ok()?;
                 let mut rgba = img.to_rgba8();
 
                 // Convert RGBA to BGRA (GPUI expects BGRA format)
@@ -59,11 +79,8 @@ impl ProcessItem {
                 Some(Arc::new(RenderImage::new(vec![frame])))
             });
 
-            // Cache the icon if we got one
-            if let Some(ref icon) = new_icon {
-                icon_cache.insert(cache_key, icon.clone());
-            }
-
+            // Cache the result (even if None, to avoid re-fetching)
+            icon_cache.insert(cache_key, new_icon.clone());
             new_icon
         };
 
@@ -136,8 +153,8 @@ pub struct SourceSelectionState {
     pub processes: Vec<ProcessItem>,
     /// Multiple source entries (each with its own dropdown and selection)
     pub sources: Vec<SourceEntry>,
-    /// Icon cache: maps bundle_id (or name) to rendered icon
-    icon_cache: HashMap<String, Arc<RenderImage>>,
+    /// Icon cache: maps bundle_id/exe_path to rendered icon (or None if icon unavailable)
+    icon_cache: HashMap<String, Option<Arc<RenderImage>>>,
 }
 
 impl SourceSelectionState {
@@ -209,7 +226,7 @@ impl SourceSelectionState {
 
     /// Refresh the list of available processes and update all source dropdowns.
     pub fn refresh_processes<V: 'static>(&mut self, window: &mut Window, cx: &mut Context<V>) {
-        // Use the icon cache to avoid re-decoding icons for known processes
+        // Use the icon cache to avoid re-fetching icons for known processes
         self.processes = enumerate_audio_sessions()
             .unwrap_or_default()
             .into_iter()

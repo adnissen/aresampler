@@ -1,32 +1,34 @@
-use crate::playback::{load_samples_for_region, AudioPlayer};
+use crate::playback::{AudioPlayer, load_samples_for_region};
 use crate::source_selection::{
-    render_placeholder_icon, ProcessItem, SourceEntry, SourceSelectionState,
+    ProcessItem, SourceEntry, SourceSelectionState, render_placeholder_icon,
 };
-use crate::waveform::{trim_wav_file, DragHandle, TrimSelection, WaveformData, WaveformView};
+use crate::waveform::{DragHandle, TrimSelection, WaveformData, WaveformView, trim_wav_file};
 use aresampler_core::{
-    is_capture_available, request_capture_permission, CaptureConfig, CaptureEvent, CaptureSession,
-    CaptureStats, MonitorConfig, PermissionStatus,
+    CaptureConfig, CaptureEvent, CaptureSession, CaptureStats, MonitorConfig, PermissionStatus,
+    is_capture_available, request_capture_permission,
 };
 use gpui::{
-    div, img, point, prelude::FluentBuilder, px, relative, rgb, Axis, Bounds, Context, CursorStyle,
-    ElementId, FontWeight, ImageSource, InteractiveElement, IntoElement, MouseDownEvent,
-    MouseMoveEvent, ParentElement, Pixels, Point, Render, Size, Styled, Window, WindowControlArea,
+    Axis, Bounds, Context, CursorStyle, ElementId, FontWeight, ImageSource, InteractiveElement,
+    IntoElement, MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Point, Render, Size,
+    StatefulInteractiveElement, Styled, Window, WindowControlArea, div, img, point,
+    prelude::FluentBuilder, px, relative, rgb,
 };
 use gpui_component::{
+    StyledExt,
     button::{Button, ButtonVariants},
     h_flex,
     select::{SearchableVec, Select, SelectEvent},
-    v_flex, StyledExt,
+    v_flex,
 };
 use std::ops::DerefMut;
 use std::path::PathBuf;
-use std::sync::mpsc::Receiver;
 use std::sync::Arc;
+use std::sync::mpsc::Receiver;
 use std::time::Instant;
 
 // Color scheme
 pub mod colors {
-    use gpui::{rgb, Rgba};
+    use gpui::{Rgba, rgb};
 
     // Backgrounds
     pub fn bg_primary() -> Rgba {
@@ -536,26 +538,28 @@ impl AppState {
                 self.error_message = None;
 
                 // Schedule a check to detect when playback finishes
-                cx.spawn(async move |this, mut cx| loop {
-                    cx.background_executor()
-                        .timer(std::time::Duration::from_millis(100))
-                        .await;
-                    let should_stop = this
-                        .update(cx.deref_mut(), |state, _cx| {
-                            if let Some(player) = &state.audio_player {
-                                player.is_empty()
-                            } else {
-                                true
-                            }
-                        })
-                        .unwrap_or(true);
+                cx.spawn(async move |this, mut cx| {
+                    loop {
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_millis(100))
+                            .await;
+                        let should_stop = this
+                            .update(cx.deref_mut(), |state, _cx| {
+                                if let Some(player) = &state.audio_player {
+                                    player.is_empty()
+                                } else {
+                                    true
+                                }
+                            })
+                            .unwrap_or(true);
 
-                    if should_stop {
-                        let _ = this.update(cx.deref_mut(), |state, cx| {
-                            state.is_playing = false;
-                            cx.notify();
-                        });
-                        break;
+                        if should_stop {
+                            let _ = this.update(cx.deref_mut(), |state, cx| {
+                                state.is_playing = false;
+                                cx.notify();
+                            });
+                            break;
+                        }
                     }
                 })
                 .detach();
@@ -1206,6 +1210,13 @@ impl AppState {
                             .text_sm()
                             .font_weight(FontWeight::SEMIBOLD)
                             .child("aresampler"),
+                    )
+                    // Version number
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(colors::text_muted())
+                            .child(concat!(" v", env!("CARGO_PKG_VERSION"))),
                     ),
             )
             // Window control buttons (Windows only)
@@ -1627,11 +1638,7 @@ impl AppState {
                                             })
                                             .child(output_name),
                                     ),
-                            )
-                            // Chevron (hide when locked)
-                            .when(!is_locked, |this| {
-                                this.child(div().text_color(colors::text_muted()).child("▼"))
-                            }),
+                            ),
                     ),
             )
     }
@@ -1786,6 +1793,11 @@ impl AppState {
                             this.handle_waveform_mouse_up(cx);
                         }),
                     )
+                    .on_hover(cx.listener(|this, hovered: &bool, _window, cx| {
+                        if !*hovered {
+                            this.handle_waveform_mouse_up(cx);
+                        }
+                    }))
                     .child(
                         WaveformView::new(data)
                             .with_trim_selection(trim_selection)

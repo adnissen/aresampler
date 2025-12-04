@@ -1,6 +1,5 @@
 //! macOS audio session enumeration using ScreenCaptureKit
 
-use super::icon::get_app_icon_png;
 use crate::types::AudioSessionInfo;
 use anyhow::{anyhow, Result};
 use screencapturekit::shareable_content::SCShareableContent;
@@ -29,14 +28,13 @@ pub fn enumerate_audio_sessions() -> Result<Vec<AudioSessionInfo>> {
             }
 
             let bundle_id = app.bundle_identifier();
-            // Fetch icon using bundle_id
-            let icon_png = get_app_icon_png(&bundle_id);
 
             Some(AudioSessionInfo {
                 pid: app.process_id() as u32,
                 name,
                 bundle_id: Some(bundle_id),
-                icon_png,
+                exe_path: None, // macOS uses bundle_id, not exe_path
+                icon_png: None, // Icons fetched on-demand by UI layer
             })
         })
         .collect();

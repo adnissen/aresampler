@@ -2,7 +2,6 @@
 resolver = "2"
 members = [
     "crates/aresampler-core",
-    "crates/aresampler-cli",
     "crates/aresampler-ui",
 ]
 

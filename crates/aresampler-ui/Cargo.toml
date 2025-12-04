@@ -1,10 +1,10 @@
 [package]
-name = "aresampler-ui"
-version = "0.1.0"
-edition = "2021"
+name = "aresampler"
+version = "0.2.0"
+edition = "2024"
 
 [[bin]]
-name = "aresampler-gui"
+name = "aresampler"
 path = "src/main.rs"
 
 [dependencies]

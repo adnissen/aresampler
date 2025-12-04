@@ -20,7 +20,9 @@ pub struct AudioSessionInfo {
     pub name: String,
     /// Bundle identifier (macOS only, None on Windows)
     pub bundle_id: Option<String>,
-    /// Application icon as PNG bytes (macOS only, None if unavailable)
+    /// Executable path (Windows only, None on macOS)
+    pub exe_path: Option<String>,
+    /// Application icon as PNG bytes (None until fetched on-demand)
     pub icon_png: Option<Vec<u8>>,
 }
 

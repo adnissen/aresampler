@@ -59,13 +59,14 @@ pub fn enumerate_audio_sessions() -> Result<Vec<AudioSessionInfo>> {
                 continue;
             }
 
-            let icon_png = process.exe().and_then(super::icon::get_app_icon_png);
+            let exe_path = process.exe().map(|p| p.to_string_lossy().to_string());
 
             sessions.push(AudioSessionInfo {
                 pid,
                 name,
                 bundle_id: None, // Windows doesn't have bundle IDs
-                icon_png,
+                exe_path,
+                icon_png: None, // Icons fetched on-demand by UI layer
             });
         }
     }
