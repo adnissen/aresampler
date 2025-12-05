@@ -1,0 +1,104 @@
+name: Release
+
+on:
+  release:
+    types: [created]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  validate-version:
+    name: Validate version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get tag version
+        id: tag
+        run: echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Get Cargo.toml version
+        id: cargo
+        run: |
+          version=$(grep '^version = ' crates/aresampler-ui/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          echo "version=$version" >> $GITHUB_OUTPUT
+
+      - name: Check version match
+        run: |
+          if [ "${{ steps.tag.outputs.version }}" != "${{ steps.cargo.outputs.version }}" ]; then
+            echo "::error::Tag version (${{ steps.tag.outputs.version }}) does not match Cargo.toml version (${{ steps.cargo.outputs.version }})"
+            exit 1
+          fi
+          echo "Version match confirmed: ${{ steps.tag.outputs.version }}"
+
+  build-windows:
+    name: Build Windows
+    needs: validate-version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Build release
+        run: cargo build --release -p aresampler
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aresampler-windows
+          path: target/release/aresampler.exe
+
+  build-macos-arm:
+    name: Build macOS ARM
+    needs: validate-version
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Build release
+        run: cargo build --release -p aresampler --target aarch64-apple-darwin
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aresampler-macos-arm
+          path: target/aarch64-apple-darwin/release/aresampler
+
+  upload-release-assets:
+    name: Upload release assets
+    needs: [build-windows, build-macos-arm]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: aresampler-windows
+          path: windows
+
+      - name: Download macOS ARM artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: aresampler-macos-arm
+          path: macos-arm
+
+      - name: Prepare assets
+        run: |
+          mv windows/aresampler.exe aresampler-windows-x64.exe
+          mv macos-arm/aresampler aresampler-macos-arm64
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            aresampler-windows-x64.exe
+            aresampler-macos-arm64
