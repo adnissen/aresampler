@@ -66,11 +66,60 @@ jobs:
       - name: Build release
         run: cargo build --release -p aresampler --target aarch64-apple-darwin
 
+      - name: Create .app bundle
+        run: |
+          # Create directory structure
+          mkdir -p aresampler.app/Contents/MacOS
+          mkdir -p aresampler.app/Contents/Resources
+
+          # Copy binary
+          cp target/aarch64-apple-darwin/release/aresampler aresampler.app/Contents/MacOS/aresampler
+          chmod +x aresampler.app/Contents/MacOS/aresampler
+
+          # Get version from tag
+          VERSION="${GITHUB_REF_NAME#v}"
+
+          # Create Info.plist
+          cat > aresampler.app/Contents/Info.plist <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleExecutable</key>
+              <string>aresampler</string>
+              <key>CFBundleIdentifier</key>
+              <string>com.aresampler.aresampler</string>
+              <key>CFBundleName</key>
+              <string>aresampler</string>
+              <key>CFBundleDisplayName</key>
+              <string>aresampler</string>
+              <key>CFBundleVersion</key>
+              <string>${VERSION}</string>
+              <key>CFBundleShortVersionString</key>
+              <string>${VERSION}</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+              <key>LSMinimumSystemVersion</key>
+              <string>11.0</string>
+              <key>NSHighResolutionCapable</key>
+              <true/>
+              <key>LSApplicationCategoryType</key>
+              <string>public.app-category.utilities</string>
+          </dict>
+          </plist>
+          EOF
+
+          # Create PkgInfo
+          echo "APPL????" > aresampler.app/Contents/PkgInfo
+
+          # Zip the .app bundle
+          zip -r aresampler-macos-arm64.app.zip aresampler.app
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: aresampler-macos-arm
-          path: target/aarch64-apple-darwin/release/aresampler
+          path: aresampler-macos-arm64.app.zip
 
   upload-release-assets:
     name: Upload release assets
@@ -94,11 +143,11 @@ jobs:
       - name: Prepare assets
         run: |
           mv windows/aresampler.exe aresampler-windows-x64.exe
-          mv macos-arm/aresampler aresampler-macos-arm64
+          mv macos-arm/aresampler-macos-arm64.app.zip aresampler-macos-arm64.app.zip
 
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             aresampler-windows-x64.exe
-            aresampler-macos-arm64
+            aresampler-macos-arm64.app.zip
