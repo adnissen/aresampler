@@ -1,3 +1,5 @@
+// Prevent console window from appearing on Windows for GUI application
+#![windows_subsystem = "windows"]
 use anyhow::Result;
 use gpui::*;
 use gpui_component::init as init_components;
