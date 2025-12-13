@@ -1,0 +1,5 @@
+[target.aarch64-apple-darwin]
+rustflags = [
+    "-C", "link-arg=-weak_framework",
+    "-C", "link-arg=ScreenCaptureKit"
+]
