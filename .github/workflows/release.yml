@@ -70,7 +70,7 @@ jobs:
         run: |
           # Create a temporary keychain
           KEYCHAIN_PATH=$RUNNER_TEMP/signing.keychain-db
-          KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
+          KEYCHAIN_PASSWORD="tempkeychain"
 
           # Decode certificate
           echo "$MACOS_CERTIFICATE" | base64 --decode > $RUNNER_TEMP/certificate.p12
@@ -89,13 +89,12 @@ jobs:
         run: cargo build --release -p aresampler --target aarch64-apple-darwin
 
       - name: Create .app bundle and sign
-        env:
-          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
-          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
         run: |
           # Re-setup keychain for this step
           KEYCHAIN_PATH=$RUNNER_TEMP/signing.keychain-db
+          KEYCHAIN_PASSWORD="tempkeychain"
           security list-keychain -d user -s $KEYCHAIN_PATH
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
 
           # Create directory structure
           mkdir -p aresampler.app/Contents/MacOS
