@@ -70,6 +70,8 @@ jobs:
         env:
           MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
           MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        with:
+          xcode-version: latest-stable
         run: |
           # Setup keychain and import certificate
           KEYCHAIN_PATH=$RUNNER_TEMP/signing.keychain-db
@@ -92,6 +94,28 @@ jobs:
           # Copy binary
           cp target/aarch64-apple-darwin/release/aresampler aresampler.app/Contents/MacOS/aresampler
           chmod +x aresampler.app/Contents/MacOS/aresampler
+
+          # Bundle Swift runtime libraries
+          mkdir -p aresampler.app/Contents/Frameworks
+
+          # Find Swift libraries path (Xcode toolchain or system)
+          if [ -d "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/macosx" ]; then
+            SWIFT_LIB_PATH="/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/macosx"
+          elif [ -d "/usr/lib/swift" ]; then
+            SWIFT_LIB_PATH="/usr/lib/swift"
+          else
+            echo "Error: Cannot find Swift runtime libraries"
+            exit 1
+          fi
+
+          # Copy all required Swift libraries
+          cp "$SWIFT_LIB_PATH/libswift_Concurrency.dylib" aresampler.app/Contents/Frameworks/ || true
+
+          # Update rpath in binary to look in the app bundle first
+          install_name_tool -add_rpath "@executable_path/../Frameworks" aresampler.app/Contents/MacOS/aresampler
+
+          # Change the libswift_Concurrency reference from @rpath to @executable_path/../Frameworks
+          install_name_tool -change "@rpath/libswift_Concurrency.dylib" "@executable_path/../Frameworks/libswift_Concurrency.dylib" aresampler.app/Contents/MacOS/aresampler
 
           # Get version from tag
           VERSION="${GITHUB_REF_NAME#v}"
@@ -130,6 +154,12 @@ jobs:
           echo "APPL????" > aresampler.app/Contents/PkgInfo
 
           # Sign the app bundle
+          # Sign frameworks first
+          for framework in aresampler.app/Contents/Frameworks/*.dylib; do
+            [ -f "$framework" ] && codesign --force --options runtime --sign "Developer ID Application" "$framework"
+          done
+
+          # Then sign the binary and app
           codesign --force --options runtime --sign "Developer ID Application" aresampler.app/Contents/MacOS/aresampler
           codesign --force --options runtime --sign "Developer ID Application" aresampler.app
 
