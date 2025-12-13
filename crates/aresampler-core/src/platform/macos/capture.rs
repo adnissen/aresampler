@@ -6,7 +6,7 @@ use crate::types::{
     CaptureCommand, CaptureConfig, CaptureEvent, CaptureStats, MonitorConfig, SourceStats,
 };
 use anyhow::{anyhow, Context, Result};
-use core_media_rs::cm_sample_buffer::CMSampleBuffer;
+use screencapturekit::cm::CMSampleBuffer;
 use hound::{SampleFormat, WavSpec, WavWriter};
 use screencapturekit::shareable_content::SCShareableContent;
 use screencapturekit::stream::configuration::SCStreamConfiguration;
@@ -222,7 +222,7 @@ impl SCStreamOutputTrait for AudioHandler {
         }
 
         // Get audio buffer from sample buffer
-        let Ok(audio_buffers) = sample_buffer.get_audio_buffer_list() else {
+        let Some(audio_buffers) = sample_buffer.audio_buffer_list() else {
             return;
         };
 
@@ -234,14 +234,12 @@ impl SCStreamOutputTrait for AudioHandler {
         // ScreenCaptureKit provides non-interleaved (planar) audio:
         // Each buffer contains samples for a single channel.
         // We need to interleave them for WAV output.
-        let buffers = audio_buffers.buffers();
-
-        if buffers.is_empty() {
+        if audio_buffers.num_buffers() == 0 {
             return;
         }
 
         // Get samples from each channel buffer
-        let channel_samples: Vec<&[f32]> = buffers
+        let channel_samples: Vec<&[f32]> = audio_buffers
             .iter()
             .map(|b| bytes_to_f32_samples(b.data()))
             .collect();
@@ -265,7 +263,7 @@ impl SCStreamOutputTrait for AudioHandler {
             }
         }
 
-        let num_bytes = buffers.iter().map(|b| b.data().len()).sum::<usize>();
+        let num_bytes = audio_buffers.iter().map(|b| b.data().len()).sum::<usize>();
         state.total_frames += num_frames as u64;
         state.total_bytes += num_bytes as u64;
 
@@ -329,7 +327,7 @@ impl SCStreamOutputTrait for MonitorAudioHandler {
         }
 
         // Get audio buffer from sample buffer
-        let Ok(audio_buffers) = sample_buffer.get_audio_buffer_list() else {
+        let Some(audio_buffers) = sample_buffer.audio_buffer_list() else {
             return;
         };
 
@@ -338,13 +336,12 @@ impl SCStreamOutputTrait for MonitorAudioHandler {
             Err(_) => return,
         };
 
-        let buffers = audio_buffers.buffers();
-        if buffers.is_empty() {
+        if audio_buffers.num_buffers() == 0 {
             return;
         }
 
         // Get samples from each channel buffer
-        let channel_samples: Vec<&[f32]> = buffers
+        let channel_samples: Vec<&[f32]> = audio_buffers
             .iter()
             .map(|b| bytes_to_f32_samples(b.data()))
             .collect();
@@ -380,7 +377,7 @@ impl SCStreamOutputTrait for MonitorAudioHandler {
                         }
                     }
                 }
-                let num_bytes = buffers.iter().map(|b| b.data().len()).sum::<usize>();
+                let num_bytes = audio_buffers.iter().map(|b| b.data().len()).sum::<usize>();
                 state.total_frames += num_frames as u64;
                 state.total_bytes += num_bytes as u64;
             }
@@ -471,6 +468,15 @@ fn run_monitor(
         return Err(anyhow!("No PIDs specified for capture"));
     }
 
+    // Normalize sample rate to ScreenCaptureKit supported values (8000, 16000, 24000, 48000)
+    let sample_rate = crate::types::normalize_sample_rate(config.sample_rate);
+    if sample_rate != config.sample_rate {
+        eprintln!(
+            "Warning: Sample rate {} Hz is not supported by ScreenCaptureKit. Using {} Hz instead.",
+            config.sample_rate, sample_rate
+        );
+    }
+
     // Validate that all processes exist
     for &pid in &config.pids {
         if !process_exists(pid) {
@@ -512,29 +518,33 @@ fn run_monitor(
     let app_pids: Vec<_> = apps.iter().map(|a| a.process_id()).collect();
     let target_windows: Vec<_> = all_windows
         .iter()
-        .filter(|w| app_pids.contains(&w.owning_application().process_id()))
+        .filter(|w| {
+            w.owning_application()
+                .map(|app| app_pids.contains(&app.process_id()))
+                .unwrap_or(false)
+        })
         .collect();
 
     // Create content filter
     let filter = if apps.len() == 1 {
         // For single app, try window-based capture first (more reliable)
         if let Some(window) = target_windows.first() {
-            SCContentFilter::new().with_desktop_independent_window(window)
+            SCContentFilter::builder()
+                .window(window)
+                .build()
         } else {
-            SCContentFilter::new().with_display_including_application_excepting_windows(
-                display,
-                &[&apps[0]],
-                &[],
-            )
+            SCContentFilter::builder()
+                .display(display)
+                .include_applications(&[&apps[0]], &[])
+                .build()
         }
     } else {
         // For multiple apps, use display-level capture with application filter
         let app_refs: Vec<_> = apps.iter().collect();
-        SCContentFilter::new().with_display_including_application_excepting_windows(
-            display,
-            &app_refs,
-            &[],
-        )
+        SCContentFilter::builder()
+            .display(display)
+            .include_applications(&app_refs, &[])
+            .build()
     };
 
     // Get display dimensions for stream config
@@ -548,29 +558,25 @@ fn run_monitor(
     };
 
     // Configure the stream for audio capture
-    let stream_config = SCStreamConfiguration::new()
+    let mut stream_config = SCStreamConfiguration::new();
+    stream_config
         .set_captures_audio(true)
-        .map_err(|e| anyhow!("Failed to enable audio capture: {:?}", e))?
-        .set_sample_rate(config.sample_rate)
-        .map_err(|e| anyhow!("Failed to set sample rate: {:?}", e))?
-        .set_channel_count(config.channels as u8)
-        .map_err(|e| anyhow!("Failed to set channel count: {:?}", e))?
+        .set_sample_rate(sample_rate as i32)
+        .set_channel_count(config.channels as i32)
         .set_width(width)
-        .map_err(|e| anyhow!("Failed to set width: {:?}", e))?
-        .set_height(height)
-        .map_err(|e| anyhow!("Failed to set height: {:?}", e))?;
+        .set_height(height);
 
     // Create ring buffer for pre-roll
     let ring_buffer = AudioRingBuffer::new(
         config.pre_roll_duration_secs,
-        config.sample_rate,
+        sample_rate,
         config.channels,
     );
 
     // WAV spec for when we transition to recording
     let wav_spec = WavSpec {
         channels: config.channels,
-        sample_rate: config.sample_rate,
+        sample_rate,
         bits_per_sample: 32,
         sample_format: SampleFormat::Float,
     };
@@ -681,6 +687,15 @@ fn run_capture(
         return Err(anyhow!("No PIDs specified for capture"));
     }
 
+    // Normalize sample rate to ScreenCaptureKit supported values (8000, 16000, 24000, 48000)
+    let sample_rate = crate::types::normalize_sample_rate(config.sample_rate);
+    if sample_rate != config.sample_rate {
+        eprintln!(
+            "Warning: Sample rate {} Hz is not supported by ScreenCaptureKit. Using {} Hz instead.",
+            config.sample_rate, sample_rate
+        );
+    }
+
     // Validate that all processes exist
     for &pid in &config.pids {
         if !process_exists(pid) {
@@ -722,29 +737,33 @@ fn run_capture(
     let app_pids: Vec<_> = apps.iter().map(|a| a.process_id()).collect();
     let target_windows: Vec<_> = all_windows
         .iter()
-        .filter(|w| app_pids.contains(&w.owning_application().process_id()))
+        .filter(|w| {
+            w.owning_application()
+                .map(|app| app_pids.contains(&app.process_id()))
+                .unwrap_or(false)
+        })
         .collect();
 
     // Create content filter
     let filter = if apps.len() == 1 {
         // For single app, try window-based capture first (more reliable)
         if let Some(window) = target_windows.first() {
-            SCContentFilter::new().with_desktop_independent_window(window)
+            SCContentFilter::builder()
+                .window(window)
+                .build()
         } else {
-            SCContentFilter::new().with_display_including_application_excepting_windows(
-                display,
-                &[&apps[0]],
-                &[],
-            )
+            SCContentFilter::builder()
+                .display(display)
+                .include_applications(&[&apps[0]], &[])
+                .build()
         }
     } else {
         // For multiple apps, use display-level capture with application filter
         let app_refs: Vec<_> = apps.iter().collect();
-        SCContentFilter::new().with_display_including_application_excepting_windows(
-            display,
-            &app_refs,
-            &[],
-        )
+        SCContentFilter::builder()
+            .display(display)
+            .include_applications(&app_refs, &[])
+            .build()
     };
 
     // Get display dimensions for stream config
@@ -758,22 +777,18 @@ fn run_capture(
     };
 
     // Configure the stream for audio capture
-    let stream_config = SCStreamConfiguration::new()
+    let mut stream_config = SCStreamConfiguration::new();
+    stream_config
         .set_captures_audio(true)
-        .map_err(|e| anyhow!("Failed to enable audio capture: {:?}", e))?
-        .set_sample_rate(config.sample_rate)
-        .map_err(|e| anyhow!("Failed to set sample rate: {:?}", e))?
-        .set_channel_count(config.channels as u8)
-        .map_err(|e| anyhow!("Failed to set channel count: {:?}", e))?
+        .set_sample_rate(sample_rate as i32)
+        .set_channel_count(config.channels as i32)
         .set_width(width)
-        .map_err(|e| anyhow!("Failed to set width: {:?}", e))?
-        .set_height(height)
-        .map_err(|e| anyhow!("Failed to set height: {:?}", e))?;
+        .set_height(height);
 
     // Set up WAV writer
     let wav_spec = WavSpec {
         channels: config.channels,
-        sample_rate: config.sample_rate,
+        sample_rate,
         bits_per_sample: 32,
         sample_format: SampleFormat::Float,
     };

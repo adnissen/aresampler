@@ -154,7 +154,7 @@ impl AppState {
             source_selection,
             output_path: None,
             pre_roll_seconds: 0.0,
-            sample_rate: 44100,
+            sample_rate: 48000,  // Apple recommends 48kHz for ScreenCaptureKit
             is_monitoring: false,
             is_recording: false,
             stats: CaptureStats::default(),
@@ -999,11 +999,13 @@ impl Render for AppState {
                     })
                     // Sample Rate Toggle Row (hidden after recording complete)
                     .when(self.waveform_data.is_none() || self.is_recording, |this| {
+                        // ScreenCaptureKit supported sample rates: 8000, 16000, 24000, 48000 Hz
+                        // https://developer.apple.com/documentation/screencapturekit/scstreamconfiguration/samplerate
                         let sample_rate_options: [(u32, &str); 4] = [
-                            (44100, "44.1k"),
+                            (8000, "8k"),
+                            (16000, "16k"),
+                            (24000, "24k"),
                             (48000, "48k"),
-                            (88200, "88.2k"),
-                            (96000, "96k"),
                         ];
                         let current_sample_rate = self.sample_rate;
                         let is_disabled = self.is_recording;

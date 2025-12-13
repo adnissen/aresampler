@@ -26,6 +26,25 @@ pub struct AudioSessionInfo {
     pub icon_png: Option<Vec<u8>>,
 }
 
+/// Validates and normalizes a sample rate for macOS ScreenCaptureKit
+///
+/// ScreenCaptureKit supports sample rates of 8000, 16000, 24000, and 48000 Hz.
+/// If an unsupported value is provided, it returns 48000 Hz (the default).
+///
+/// Reference: https://developer.apple.com/documentation/screencapturekit/scstreamconfiguration/samplerate
+#[cfg(target_os = "macos")]
+pub fn normalize_sample_rate(sample_rate: u32) -> u32 {
+    match sample_rate {
+        8000 | 16000 | 24000 | 48000 => sample_rate,
+        _ => 48000, // Default to 48kHz for unsupported rates
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn normalize_sample_rate(sample_rate: u32) -> u32 {
+    sample_rate // No restrictions on other platforms
+}
+
 /// Configuration for audio capture
 #[derive(Clone, Debug)]
 pub struct CaptureConfig {

@@ -142,7 +142,7 @@ dependencies = [
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
- "screencapturekit 0.3.6",
+ "screencapturekit 1.4.1",
  "sysinfo",
  "thiserror 1.0.69",
  "wasapi",
@@ -1140,19 +1140,6 @@ name = "core-graphics"
 version = "0.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fa95a34622365fa5bbf40b20b75dba8dfa8c94c734aea8ac9a5ca38af14316f1"
-dependencies = [
- "bitflags 2.10.0",
- "core-foundation 0.10.0",
- "core-graphics-types 0.2.0",
- "foreign-types",
- "libc",
-]
-
-[[package]]
-name = "core-graphics"
-version = "0.25.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "064badf302c3194842cf2c5d61f56cc88e54a759313879cdf03abdd27d0c3b97"
 dependencies = [
  "bitflags 2.10.0",
  "core-foundation 0.10.0",
@@ -5350,19 +5337,9 @@ dependencies = [
 
 [[package]]
 name = "screencapturekit"
-version = "0.3.6"
+version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c62ae379564f834110c5b020cc731a7c14b8ec4879b4367579a467a0a704c21"
-dependencies = [
- "block2",
- "core-foundation 0.10.0",
- "core-graphics 0.25.0",
- "core-media-rs",
- "core-utils-rs",
- "core-video-rs",
- "dispatch",
- "objc",
-]
+checksum = "a45f265e0ce18ab2ed8ad801b1cf6a83dd1fc327326857a09ee8ea74150b9471"
 
 [[package]]
 name = "screencapturekit-sys"
