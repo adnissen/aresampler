@@ -88,8 +88,15 @@ jobs:
       - name: Build release
         run: cargo build --release -p aresampler --target aarch64-apple-darwin
 
-      - name: Create .app bundle
+      - name: Create .app bundle and sign
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
         run: |
+          # Re-setup keychain for this step
+          KEYCHAIN_PATH=$RUNNER_TEMP/signing.keychain-db
+          security list-keychain -d user -s $KEYCHAIN_PATH
+
           # Create directory structure
           mkdir -p aresampler.app/Contents/MacOS
           mkdir -p aresampler.app/Contents/Resources
