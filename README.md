@@ -5,3 +5,7 @@
 To build and run the ui from source, execute: `cargo run`.
 
 `aresampler` is available under the AGPL license.
+
+### Limitations
+* On macOS, each source will display the same volume level while recording. 
+* * This is because Apple's `ScreenCaptureKit` API only provides a single stream of already-mixed audio, so it's not possible to tell which audio is coming from which source.
