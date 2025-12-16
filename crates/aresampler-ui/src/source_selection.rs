@@ -303,28 +303,6 @@ impl SourceSelectionState {
         }
     }
 
-    /// Clear the selection for a specific source.
-    pub fn clear_selection<V: 'static>(
-        &mut self,
-        index: usize,
-        window: &mut Window,
-        cx: &mut Context<V>,
-    ) {
-        if let Some(source) = self.sources.get_mut(index) {
-            source.selected_process = None;
-            source.select_state.update(cx, |state, cx| {
-                state.set_selected_index(None, window, cx);
-            });
-        }
-    }
-
-    /// Clear all selections.
-    pub fn clear_all_selections<V: 'static>(&mut self, window: &mut Window, cx: &mut Context<V>) {
-        for i in 0..self.sources.len() {
-            self.clear_selection(i, window, cx);
-        }
-    }
-
     /// Check if any source has a selection.
     pub fn has_any_selection(&self) -> bool {
         self.sources.iter().any(|s| s.selected_process.is_some())

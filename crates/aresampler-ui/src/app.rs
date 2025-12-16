@@ -8,15 +8,15 @@ use aresampler_core::{
     is_capture_available, request_capture_permission,
 };
 use gpui::{
-    Axis, Bounds, Context, CursorStyle, ElementId, FontWeight, ImageSource, InteractiveElement,
+    Bounds, Context, CursorStyle, ElementId, FontWeight, ImageSource, InteractiveElement,
     IntoElement, MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Point, Render, Size,
     StatefulInteractiveElement, Styled, Window, WindowControlArea, div, img, point,
     prelude::FluentBuilder, px, relative, rgb,
 };
 use gpui_component::{
-    StyledExt,
     button::{Button, ButtonVariants},
     h_flex,
+    scroll::ScrollableElement,
     select::{SearchableVec, Select, SelectEvent},
     v_flex,
 };
@@ -1175,7 +1175,7 @@ impl Render for AppState {
                                 .child(msg),
                         )
                     })
-                    .scrollable(Axis::Vertical),
+                    .overflow_y_scrollbar(),
             )
             .into_any_element()
     }

@@ -46,9 +46,6 @@ pub struct WaveformData {
     /// Each pair represents the range of sample values in that time slice.
     pub peaks: Vec<(f32, f32)>,
 
-    /// Original sample rate (for time calculations)
-    pub sample_rate: u32,
-
     /// Total duration in seconds
     pub duration_secs: f64,
 }
@@ -111,7 +108,6 @@ impl WaveformData {
         if total_frames == 0 {
             return Ok(Self {
                 peaks: vec![],
-                sample_rate,
                 duration_secs: 0.0,
             });
         }
@@ -184,7 +180,6 @@ impl WaveformData {
 
         Ok(Self {
             peaks,
-            sample_rate,
             duration_secs,
         })
     }
