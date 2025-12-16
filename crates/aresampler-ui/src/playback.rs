@@ -3,7 +3,9 @@ use std::path::Path;
 
 #[derive(Debug)]
 pub enum PlaybackError {
+    #[allow(dead_code)]
     Stream(rodio::StreamError),
+    #[allow(dead_code)]
     Play(rodio::PlayError),
 }
 
