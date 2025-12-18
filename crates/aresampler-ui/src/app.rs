@@ -18,7 +18,7 @@ use gpui_component::{
     h_flex,
     scroll::ScrollableElement,
     select::{SearchableVec, Select, SelectEvent},
-    v_flex,
+    v_flex, Theme,
 };
 use std::ops::DerefMut;
 use std::path::PathBuf;
@@ -869,9 +869,11 @@ impl Render for AppState {
         let pre_roll_options: [(f32, &str); 4] =
             [(0.0, "Off"), (5.0, "5s"), (10.0, "10s"), (30.0, "30s")];
 
+        let theme = Theme::global(cx);
+
         v_flex()
             .size_full()
-            .bg(colors::bg_secondary())
+            .bg(theme.background)
             .text_color(colors::text_primary())
             // Header with logo
             .child(self.render_header(cx))
@@ -1734,6 +1736,7 @@ impl AppState {
         data: Arc<WaveformData>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let theme = Theme::global(cx);
         let trim_selection = self.trim_selection.clone();
         let is_modified = self.trim_selection.is_modified();
         let duration = data.duration_secs;
@@ -1826,13 +1829,14 @@ impl AppState {
                             .id("play-button")
                             .size(px(44.0))
                             .rounded(px(10.0))
-                            .bg(colors::bg_tertiary())
+                            .bg(theme.secondary)
                             .border_1()
-                            .border_color(colors::border())
+                            .border_color(theme.border)
                             .flex()
                             .items_center()
                             .justify_center()
                             .cursor_pointer()
+                            .hover(|s| s.bg(theme.secondary_hover))
                             .on_mouse_down(
                                 gpui::MouseButton::Left,
                                 cx.listener(|this, _, window, cx| {
@@ -1841,7 +1845,7 @@ impl AppState {
                             )
                             .child(
                                 div()
-                                    .text_color(colors::text_secondary())
+                                    .text_color(theme.foreground)
                                     .child(if self.is_playing { "⏹" } else { "▶" }),
                             ),
                     )
@@ -1852,23 +1856,24 @@ impl AppState {
                             .flex_1()
                             .py_3()
                             .rounded(px(10.0))
-                            .bg(colors::bg_tertiary())
+                            .bg(theme.secondary)
                             .border_1()
-                            .border_color(colors::border())
+                            .border_color(theme.border)
                             .flex()
                             .items_center()
                             .justify_center()
                             .cursor_pointer()
                             .text_sm()
-                            .text_color(colors::text_secondary())
+                            .text_color(theme.foreground)
                             .when(!is_modified, |this| this.opacity(0.5).cursor_not_allowed())
                             .when(is_modified, |this| {
-                                this.on_mouse_down(
-                                    gpui::MouseButton::Left,
-                                    cx.listener(|this, _, window, cx| {
-                                        this.cut_audio(window, cx);
-                                    }),
-                                )
+                                this.hover(|s| s.bg(theme.secondary_hover))
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Left,
+                                        cx.listener(|this, _, window, cx| {
+                                            this.cut_audio(window, cx);
+                                        }),
+                                    )
                             })
                             .child("Cut Selection"),
                     )
@@ -1878,20 +1883,21 @@ impl AppState {
                             .id("reset-button")
                             .size(px(44.0))
                             .rounded(px(10.0))
-                            .bg(colors::bg_tertiary())
+                            .bg(theme.secondary)
                             .border_1()
-                            .border_color(colors::border())
+                            .border_color(theme.border)
                             .flex()
                             .items_center()
                             .justify_center()
                             .cursor_pointer()
+                            .hover(|s| s.bg(theme.secondary_hover))
                             .on_mouse_down(
                                 gpui::MouseButton::Left,
                                 cx.listener(|this, _, window, cx| {
                                     this.reset_session(window, cx);
                                 }),
                             )
-                            .child(div().text_color(colors::text_secondary()).child("↺")),
+                            .child(div().text_color(theme.foreground).child("↺")),
                     ),
             )
     }

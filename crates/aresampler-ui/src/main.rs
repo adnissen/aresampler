@@ -7,6 +7,7 @@ use gpui_component::init as init_components;
 mod app;
 mod playback;
 mod source_selection;
+mod theme;
 mod waveform;
 
 fn main() -> Result<()> {
@@ -16,6 +17,9 @@ fn main() -> Result<()> {
     app.run(move |cx| {
         // Initialize gpui-component library
         init_components(cx);
+
+        // Initialize theme
+        theme::init(cx);
 
         // Configure window options - small centered window
         let window_options = WindowOptions {
