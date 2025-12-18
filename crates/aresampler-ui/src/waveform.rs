@@ -200,24 +200,42 @@ pub struct WaveformView {
 
 impl WaveformView {
     pub fn new(data: Arc<WaveformData>) -> Self {
-        // Colors matching the new theme
-        // Accent: 0x22d3ee (cyan) -> hsla(0.52, 0.82, 0.54, 1.0)
-        // BG_PRIMARY: 0x0a0a0b -> hsla(0.0, 0.0, 0.04, 1.0)
+        // Default colors - will be overridden by theme
         Self {
             data,
-            color: hsla(0.52, 0.82, 0.54, 1.0), // Accent cyan
+            color: hsla(0.52, 0.82, 0.54, 1.0), // Default accent
             line_width: 1.5,
-            background: hsla(0.0, 0.0, 0.04, 1.0), // BG_PRIMARY dark
+            background: hsla(0.0, 0.0, 0.04, 1.0), // Default dark background
             vertical_padding: 0.1,                 // 10% padding top and bottom
             trim_selection: None,
             dimmed_color: hsla(0.0, 0.0, 0.0, 0.6), // Semi-transparent black overlay
-            handle_color: hsla(0.52, 0.82, 0.54, 1.0), // Accent cyan for handles
+            handle_color: hsla(0.52, 0.82, 0.54, 1.0), // Default accent for handles
             handle_width: 4.0,
         }
     }
 
     pub fn with_trim_selection(mut self, selection: TrimSelection) -> Self {
         self.trim_selection = Some(selection);
+        self
+    }
+
+    pub fn with_color(mut self, color: Hsla) -> Self {
+        self.color = color;
+        self
+    }
+
+    pub fn with_background(mut self, background: Hsla) -> Self {
+        self.background = background;
+        self
+    }
+
+    pub fn with_handle_color(mut self, color: Hsla) -> Self {
+        self.handle_color = color;
+        self
+    }
+
+    pub fn with_dimmed_color(mut self, color: Hsla) -> Self {
+        self.dimmed_color = color;
         self
     }
 
