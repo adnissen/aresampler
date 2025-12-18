@@ -9,13 +9,12 @@ use gpui::{
     RenderImage, SharedString, Styled, Window, div, img, prelude::FluentBuilder, px,
 };
 use gpui_component::{
-    h_flex,
+    Theme, h_flex,
     select::{SearchableVec, SelectItem, SelectState},
 };
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::app::colors;
 
 /// Represents an audio source (application/process) that can be recorded from.
 ///
@@ -317,13 +316,15 @@ impl SourceSelectionState {
 }
 
 /// Render a placeholder icon for empty source selection.
-pub fn render_placeholder_icon() -> impl IntoElement {
+pub fn render_placeholder_icon(cx: &App) -> impl IntoElement {
+    let theme = Theme::global(cx);
+
     div()
         .size(px(28.0))
         .rounded(px(6.0))
-        .bg(colors::bg_tertiary())
+        .bg(theme.muted)
         .border_1()
-        .border_color(colors::border())
+        .border_color(theme.border)
         .flex()
         .items_center()
         .justify_center()
@@ -332,6 +333,6 @@ pub fn render_placeholder_icon() -> impl IntoElement {
                 .size(px(14.0))
                 .rounded(px(3.0))
                 .border_1()
-                .border_color(colors::text_muted()),
+                .border_color(theme.muted_foreground),
         )
 }

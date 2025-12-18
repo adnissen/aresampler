@@ -1,39 +1,152 @@
 //! Theme integration with gpui-component
 //!
-//! This module loads the One Dark theme and provides helper functions
+//! This module loads themes and provides helper functions
 //! for accessing theme colors throughout the application.
 
 use gpui::{App, Hsla};
-use gpui_component::{Theme, ThemeSet};
+use gpui_component::{Theme, ThemeConfig, ThemeSet};
 use std::rc::Rc;
 
-/// One Dark Theme JSON embedded in the binary
+/// Embedded theme files
+const ADVENTURE_THEME: &str = include_str!("../assets/themes/adventure.json");
+const ALDUIN_THEME: &str = include_str!("../assets/themes/alduin.json");
+const AYU_THEME: &str = include_str!("../assets/themes/ayu.json");
+const CATPPUCCIN_THEME: &str = include_str!("../assets/themes/catppuccin.json");
+const EVERFOREST_THEME: &str = include_str!("../assets/themes/everforest.json");
+const FAHRENHEIT_THEME: &str = include_str!("../assets/themes/fahrenheit.json");
+const FLEXOKI_THEME: &str = include_str!("../assets/themes/flexoki.json");
+const GRUVBOX_THEME: &str = include_str!("../assets/themes/gruvbox.json");
+const HARPER_THEME: &str = include_str!("../assets/themes/harper.json");
+const HYBRID_THEME: &str = include_str!("../assets/themes/hybrid.json");
+const JELLYBEANS_THEME: &str = include_str!("../assets/themes/jellybeans.json");
+const KIBBLE_THEME: &str = include_str!("../assets/themes/kibble.json");
+const MACOS_CLASSIC_THEME: &str = include_str!("../assets/themes/macos-classic.json");
+const MATRIX_THEME: &str = include_str!("../assets/themes/matrix.json");
+const MELLIFLUOUS_THEME: &str = include_str!("../assets/themes/mellifluous.json");
+const MOLOKAI_THEME: &str = include_str!("../assets/themes/molokai.json");
 const ONE_DARK_THEME: &str = include_str!("../assets/themes/one-dark-theme.json");
+const SOLARIZED_THEME: &str = include_str!("../assets/themes/solarized.json");
+const SPACEDUCK_THEME: &str = include_str!("../assets/themes/spaceduck.json");
+const TOKYONIGHT_THEME: &str = include_str!("../assets/themes/tokyonight.json");
+const TWILIGHT_THEME: &str = include_str!("../assets/themes/twilight.json");
 
-/// Initialize the One Dark theme as the default theme for the application.
-/// Call this after `gpui_component::init(cx)` in your main function.
-pub fn init(cx: &mut App) {
-    // Parse the One Dark theme
-    let theme_set: ThemeSet =
-        serde_json::from_str(ONE_DARK_THEME).expect("Failed to parse One Dark theme JSON");
+/// A single theme variant that can be applied
+#[derive(Clone)]
+pub struct ThemeVariant {
+    /// Display name for the menu
+    pub name: String,
+    /// The theme configuration
+    pub config: ThemeConfig,
+}
 
-    // Get the first theme config (One Dark)
-    let one_dark_config = theme_set
-        .themes
-        .into_iter()
-        .next()
-        .expect("One Dark theme set should have at least one theme");
+/// Registry of all available themes
+pub struct ThemeRegistry {
+    /// All available theme variants
+    pub themes: Vec<ThemeVariant>,
+}
 
-    // Get the global theme and set our One Dark as the dark theme
+impl ThemeRegistry {
+    /// Create the theme registry with all embedded themes
+    pub fn new() -> Self {
+        let mut themes = Vec::new();
+
+        // Helper to parse and add themes from a JSON string
+        let mut add_themes = |json: &str| {
+            if let Ok(theme_set) = serde_json::from_str::<ThemeSet>(json) {
+                for config in theme_set.themes {
+                    themes.push(ThemeVariant {
+                        name: config.name.to_string(),
+                        config,
+                    });
+                }
+            }
+        };
+
+        // Add all themes - sorted alphabetically by file name
+        add_themes(ADVENTURE_THEME);
+        add_themes(ALDUIN_THEME);
+        add_themes(AYU_THEME);
+        add_themes(CATPPUCCIN_THEME);
+        add_themes(EVERFOREST_THEME);
+        add_themes(FAHRENHEIT_THEME);
+        add_themes(FLEXOKI_THEME);
+        add_themes(GRUVBOX_THEME);
+        add_themes(HARPER_THEME);
+        add_themes(HYBRID_THEME);
+        add_themes(JELLYBEANS_THEME);
+        add_themes(KIBBLE_THEME);
+        add_themes(MACOS_CLASSIC_THEME);
+        add_themes(MATRIX_THEME);
+        add_themes(MELLIFLUOUS_THEME);
+        add_themes(MOLOKAI_THEME);
+        add_themes(ONE_DARK_THEME);
+        add_themes(SOLARIZED_THEME);
+        add_themes(SPACEDUCK_THEME);
+        add_themes(TOKYONIGHT_THEME);
+        add_themes(TWILIGHT_THEME);
+
+        // Sort themes by name for consistent menu ordering
+        themes.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+
+        Self { themes }
+    }
+
+    /// Get all theme names for menu display
+    pub fn theme_names(&self) -> Vec<String> {
+        self.themes.iter().map(|t| t.name.clone()).collect()
+    }
+
+    /// Find a theme by name
+    pub fn find_theme(&self, name: &str) -> Option<&ThemeVariant> {
+        self.themes.iter().find(|t| t.name == name)
+    }
+}
+
+impl Default for ThemeRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Apply a theme configuration to the global theme
+pub fn apply_theme(config: &ThemeConfig, cx: &mut App) {
     let theme = Theme::global_mut(cx);
-    let config_rc = Rc::new(one_dark_config);
-    theme.dark_theme = config_rc.clone();
+    let config_rc = Rc::new(config.clone());
+
+    // Set as appropriate theme based on mode
+    if config.mode.is_dark() {
+        theme.dark_theme = config_rc.clone();
+    } else {
+        theme.light_theme = config_rc.clone();
+    }
 
     // Apply the configuration
     theme.apply_config(&config_rc);
 
     // Disable shadows globally (helps with context menu shadow artifacts)
     theme.shadow = false;
+}
+
+/// Initialize the default theme (One Dark) for the application.
+/// Call this after `gpui_component::init(cx)` in your main function.
+pub fn init(cx: &mut App) {
+    init_with_theme_name(None, cx);
+}
+
+/// Initialize the application with a specific theme by name.
+/// Falls back to "One Dark" if the theme is not found.
+pub fn init_with_theme_name(theme_name: Option<&str>, cx: &mut App) {
+    let registry = ThemeRegistry::new();
+
+    // Try to find the saved theme, fall back to One Dark
+    let config = theme_name
+        .and_then(|name| registry.find_theme(name))
+        .or_else(|| registry.find_theme("One Dark"))
+        .map(|v| v.config.clone());
+
+    if let Some(config) = config {
+        apply_theme(&config, cx);
+    }
 }
 
 /// Helper trait extension for accessing common theme colors.

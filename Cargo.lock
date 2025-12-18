@@ -124,11 +124,13 @@ version = "0.2.4"
 dependencies = [
  "anyhow",
  "aresampler-core",
+ "dirs 5.0.1",
  "gpui",
  "gpui-component",
  "hound",
  "image",
  "rodio",
+ "serde",
  "serde_json",
 ]
 

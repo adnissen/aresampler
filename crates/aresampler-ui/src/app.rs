@@ -871,10 +871,18 @@ impl Render for AppState {
 
         let theme = Theme::global(cx);
 
+        // Capture theme colors for use in closures
+        let theme_border = theme.border;
+        let theme_muted = theme.muted;
+        let theme_muted_fg = theme.muted_foreground;
+        let _theme_secondary = theme.secondary;
+        let theme_secondary_active = theme.secondary_active;
+        let theme_primary = theme.primary;
+
         v_flex()
             .size_full()
             .bg(theme.background)
-            .text_color(colors::text_primary())
+            .text_color(theme.foreground)
             // Header with logo
             .child(self.render_header(cx))
             // Main content
@@ -886,7 +894,7 @@ impl Render for AppState {
                     // Source Selection Cards
                     .child(self.render_sources_section(cx))
                     // Arrow divider between source and output
-                    .child(self.render_arrow_divider())
+                    .child(self.render_arrow_divider(cx))
                     // Output File Card
                     .child(self.render_output_card(cx))
                     // Pre-roll Toggle Row (hidden after recording complete)
@@ -898,7 +906,7 @@ impl Render for AppState {
                                 .items_center()
                                 .justify_between()
                                 .border_b_1()
-                                .border_color(colors::border())
+                                .border_color(theme_border)
                                 .child(
                                     div()
                                         .w(relative(0.5))
@@ -907,7 +915,7 @@ impl Render for AppState {
                                             div()
                                                 .top_neg_3()
                                                 .text_xs()
-                                                .text_color(colors::text_secondary())
+                                                .text_color(theme_muted_fg)
                                                 .child("Pre-roll buffer"),
                                         )
                                         .child(
@@ -916,7 +924,7 @@ impl Render for AppState {
                                                 .top_1p5()
                                                 .left_0()
                                                 .w(relative(0.8))
-                                                .text_color(colors::text_muted())
+                                                .text_color(theme_muted_fg)
                                                 .text_size(px(9.0))
                                                 .line_height(px(10.0))
                                                 .child("time saved before recording starts"),
@@ -926,7 +934,7 @@ impl Render for AppState {
                                     h_flex()
                                         .gap_1()
                                         .p_1()
-                                        .bg(colors::bg_tertiary())
+                                        .bg(theme_muted)
                                         .rounded_md()
                                         .children(pre_roll_options.iter().enumerate().map(
                                             |(idx, (value, label))| {
@@ -945,11 +953,11 @@ impl Render for AppState {
                                                     .text_xs()
                                                     .cursor_pointer()
                                                     .when(is_active, |this| {
-                                                        this.bg(colors::bg_secondary())
-                                                            .text_color(colors::accent())
+                                                        this.bg(theme_secondary_active)
+                                                            .text_color(theme_primary)
                                                     })
                                                     .when(!is_active, |this| {
-                                                        this.text_color(colors::text_muted())
+                                                        this.text_color(theme_muted_fg)
                                                     })
                                                     .when(is_disabled, |this| {
                                                         this.opacity(0.5).cursor_not_allowed()
@@ -1019,7 +1027,7 @@ impl Render for AppState {
                                 .items_center()
                                 .justify_between()
                                 .border_b_1()
-                                .border_color(colors::border())
+                                .border_color(theme_border)
                                 .child(
                                     div()
                                         .w(relative(0.5))
@@ -1028,7 +1036,7 @@ impl Render for AppState {
                                             div()
                                                 .top_neg_3()
                                                 .text_xs()
-                                                .text_color(colors::text_secondary())
+                                                .text_color(theme_muted_fg)
                                                 .child("Sample rate"),
                                         )
                                         .child(
@@ -1037,7 +1045,7 @@ impl Render for AppState {
                                                 .top_1p5()
                                                 .left_0()
                                                 .w(relative(0.8))
-                                                .text_color(colors::text_muted())
+                                                .text_color(theme_muted_fg)
                                                 .text_size(px(9.0))
                                                 .line_height(px(10.0))
                                                 .child("output audio quality"),
@@ -1047,7 +1055,7 @@ impl Render for AppState {
                                     h_flex()
                                         .gap_1()
                                         .p_1()
-                                        .bg(colors::bg_tertiary())
+                                        .bg(theme_muted)
                                         .rounded_md()
                                         .children(sample_rate_options.iter().enumerate().map(
                                             |(idx, (value, label))| {
@@ -1064,11 +1072,11 @@ impl Render for AppState {
                                                     .text_xs()
                                                     .cursor_pointer()
                                                     .when(is_active, |this| {
-                                                        this.bg(colors::bg_secondary())
-                                                            .text_color(colors::accent())
+                                                        this.bg(theme_secondary_active)
+                                                            .text_color(theme_primary)
                                                     })
                                                     .when(!is_active, |this| {
-                                                        this.text_color(colors::text_muted())
+                                                        this.text_color(theme_muted_fg)
                                                     })
                                                     .when(is_disabled, |this| {
                                                         this.opacity(0.5).cursor_not_allowed()
@@ -1147,7 +1155,7 @@ impl Render for AppState {
                     })
                     // Stats Row (shown during/after recording)
                     .when(self.is_recording || self.waveform_data.is_some(), |this| {
-                        this.child(self.render_stats_row())
+                        this.child(self.render_stats_row(cx))
                     })
                     // Waveform Section (shown after recording)
                     .when_some(self.waveform_data.clone(), |this, data| {
@@ -1189,13 +1197,14 @@ impl AppState {
     /// On Windows: minimize/close buttons on right, draggable area
     fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let is_windows = cfg!(target_os = "windows");
+        let theme = Theme::global(cx);
 
         h_flex()
             .w_full()
             .h(px(34.0))
             .flex_shrink_0()
             .border_b_1()
-            .border_color(colors::border())
+            .border_color(theme.border)
             // Draggable title area (contains label and fills remaining space)
             .child(
                 h_flex()
@@ -1213,13 +1222,14 @@ impl AppState {
                         div()
                             .text_sm()
                             .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme.foreground)
                             .child("aresampler"),
                     )
                     // Version number
                     .child(
                         div()
                             .text_sm()
-                            .text_color(colors::text_muted())
+                            .text_color(theme.muted_foreground)
                             .child(concat!(" v", env!("CARGO_PKG_VERSION"))),
                     ),
             )
@@ -1280,22 +1290,26 @@ impl AppState {
     }
 
     /// Render the arrow divider between source and output cards
-    fn render_arrow_divider(&self) -> impl IntoElement {
+    fn render_arrow_divider(&self, cx: &Context<Self>) -> impl IntoElement {
+        let theme = Theme::global(cx);
+
         h_flex()
             .w_full()
             .px_4()
             .items_center()
             .gap_3()
             // Left line segment
-            .child(div().flex_1().h(px(1.0)).bg(colors::border()))
+            .child(div().flex_1().h(px(1.0)).bg(theme.border))
             // Arrow icon in the middle
-            .child(div().text_sm().text_color(colors::text_muted()).child("↓"))
+            .child(div().text_sm().text_color(theme.muted_foreground).child("↓"))
             // Right line segment
-            .child(div().flex_1().h(px(1.0)).bg(colors::border()))
+            .child(div().flex_1().h(px(1.0)).bg(theme.border))
     }
 
     /// Render the "+" divider between source cards
-    fn render_plus_divider(&self) -> impl IntoElement {
+    fn render_plus_divider(&self, cx: &Context<Self>) -> impl IntoElement {
+        let theme = Theme::global(cx);
+
         h_flex()
             .w_full()
             .px_4()
@@ -1305,14 +1319,20 @@ impl AppState {
             // Left space segment
             .child(div().flex_1().h(px(1.0)))
             // Plus icon in the middle
-            .child(div().text_sm().text_color(colors::text_muted()).child("+"))
+            .child(div().text_sm().text_color(theme.muted_foreground).child("+"))
             // Right space segment
             .child(div().flex_1().h(px(1.0)))
     }
 
     /// Render all source selection cards plus the Add Source button.
     fn render_sources_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::global(cx);
         let source_count = self.source_selection.sources.len();
+
+        // Capture theme colors for closures
+        let theme_border = theme.border;
+        let theme_muted_fg = theme.muted_foreground;
+        let theme_muted = theme.muted;
 
         v_flex()
             .gap_0()
@@ -1321,7 +1341,7 @@ impl AppState {
                 let mut elements: Vec<gpui::AnyElement> = Vec::new();
                 // Add "+" divider before each card except the first
                 if index > 0 {
-                    elements.push(self.render_plus_divider().into_any_element());
+                    elements.push(self.render_plus_divider(cx).into_any_element());
                 }
                 elements.push(self.render_source_card(index, cx).into_any_element());
                 elements
@@ -1340,7 +1360,7 @@ impl AppState {
                                 .py_2()
                                 .rounded(px(8.0))
                                 .border_1()
-                                .border_color(colors::border())
+                                .border_color(theme_border)
                                 .border_dashed()
                                 .cursor_pointer()
                                 .flex()
@@ -1348,8 +1368,8 @@ impl AppState {
                                 .justify_center()
                                 .gap_2()
                                 .text_sm()
-                                .text_color(colors::text_muted())
-                                .hover(|this| this.bg(colors::bg_tertiary()))
+                                .text_color(theme_muted_fg)
+                                .hover(|this| this.bg(theme_muted))
                                 .on_mouse_down(
                                     gpui::MouseButton::Left,
                                     cx.listener(|this, _, window, cx| {
@@ -1366,6 +1386,7 @@ impl AppState {
 
     /// Render a single source (application) selection card
     fn render_source_card(&self, index: usize, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::global(cx);
         let source = &self.source_selection.sources[index];
         let has_selection = source.selected_process.is_some();
         let is_first = index == 0;
@@ -1375,6 +1396,13 @@ impl AppState {
         let is_active = self.stats.is_monitoring || self.stats.is_recording;
         let has_waveform = self.waveform_data.is_some();
         let is_locked = has_waveform || self.is_recording;
+
+        // Capture theme colors for closures
+        let theme_muted = theme.muted;
+        let theme_muted_fg = theme.muted_foreground;
+        let theme_border = theme.border;
+        let theme_secondary = theme.secondary;
+        let theme_danger = theme.danger;
 
         // Label text changes based on state
         let label_text = if has_waveform {
@@ -1397,9 +1425,9 @@ impl AppState {
                         .px_3()
                         .py_2()
                         .rounded(px(10.0))
-                        .when(has_selection, |this| this.bg(colors::bg_tertiary()))
+                        .when(has_selection, |this| this.bg(theme_muted))
                         .when(!has_selection, |this| {
-                            this.border_1().border_color(colors::border())
+                            this.border_1().border_color(theme_border)
                         })
                         .child(
                             v_flex()
@@ -1422,10 +1450,10 @@ impl AppState {
                                                     )
                                                     .into_any_element()
                                             } else {
-                                                render_placeholder_icon().into_any_element()
+                                                render_placeholder_icon(cx).into_any_element()
                                             }
                                         } else {
-                                            render_placeholder_icon().into_any_element()
+                                            render_placeholder_icon(cx).into_any_element()
                                         })
                                         // Text content
                                         .child(
@@ -1436,7 +1464,7 @@ impl AppState {
                                                 .child(
                                                     div()
                                                         .text_xs()
-                                                        .text_color(colors::text_muted())
+                                                        .text_color(theme_muted_fg)
                                                         .child(label_text),
                                                 )
                                                 .child(
@@ -1446,7 +1474,7 @@ impl AppState {
                                                         .overflow_hidden()
                                                         .text_ellipsis()
                                                         .when(!has_selection, |this| {
-                                                            this.text_color(colors::text_muted())
+                                                            this.text_color(theme_muted_fg)
                                                         })
                                                         .child(
                                                             source
@@ -1474,10 +1502,10 @@ impl AppState {
                                                     .justify_center()
                                                     .cursor_pointer()
                                                     .text_xs()
-                                                    .text_color(colors::text_muted())
+                                                    .text_color(theme_muted_fg)
                                                     .hover(|this| {
-                                                        this.bg(colors::bg_secondary())
-                                                            .text_color(colors::error_text())
+                                                        this.bg(theme_secondary)
+                                                            .text_color(theme_danger)
                                                     })
                                                     .on_mouse_down(
                                                         gpui::MouseButton::Left,
@@ -1491,7 +1519,7 @@ impl AppState {
                                         // Chevron (only show for first source, hide when locked)
                                         .when(is_first && !is_locked, |this| {
                                             this.child(
-                                                div().text_color(colors::text_muted()).child("▼"),
+                                                div().text_color(theme_muted_fg).child("▼"),
                                             )
                                         }),
                                 )
@@ -1577,6 +1605,7 @@ impl AppState {
 
     /// Render the output file selection card
     fn render_output_card(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::global(cx);
         let has_output = self.output_path.is_some();
         let has_waveform = self.waveform_data.is_some();
         let is_locked = has_waveform || self.is_recording;
@@ -1587,6 +1616,11 @@ impl AppState {
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "Choose destination...".to_string());
 
+        // Capture theme colors for closures
+        let theme_border = theme.border;
+        let theme_muted = theme.muted;
+        let theme_muted_fg = theme.muted_foreground;
+
         // Label text changes based on state
         let label_text = if has_waveform { "SAVED AS" } else { "SAVE TO" };
 
@@ -1594,7 +1628,7 @@ impl AppState {
             .px_4()
             .py_3()
             .border_b_1()
-            .border_color(colors::border())
+            .border_color(theme_border)
             .child(
                 div()
                     .id("output-card")
@@ -1612,16 +1646,16 @@ impl AppState {
                             }),
                         )
                     })
-                    .when(has_output, |this| this.bg(colors::bg_tertiary()))
+                    .when(has_output, |this| this.bg(theme_muted))
                     .when(!has_output, |this| {
-                        this.border_1().border_color(colors::border())
+                        this.border_1().border_color(theme_border)
                     })
                     .child(
                         h_flex()
                             .gap_3()
                             .items_center()
                             // File icon
-                            .child(self.render_file_icon(has_output))
+                            .child(self.render_file_icon(has_output, cx))
                             // Text content
                             .child(
                                 v_flex()
@@ -1630,7 +1664,7 @@ impl AppState {
                                     .child(
                                         div()
                                             .text_xs()
-                                            .text_color(colors::text_muted())
+                                            .text_color(theme_muted_fg)
                                             .child(label_text),
                                     )
                                     .child(
@@ -1638,7 +1672,7 @@ impl AppState {
                                             .text_sm()
                                             .font_weight(FontWeight::MEDIUM)
                                             .when(!has_output, |this| {
-                                                this.text_color(colors::text_muted())
+                                                this.text_color(theme_muted_fg)
                                             })
                                             .child(output_name),
                                     ),
@@ -1647,30 +1681,34 @@ impl AppState {
             )
     }
 
-    /// Render the file icon (purple gradient when selected, gray when empty)
-    fn render_file_icon(&self, has_output: bool) -> impl IntoElement {
+    /// Render the file icon (accent color when selected, muted when empty)
+    fn render_file_icon(&self, has_output: bool, cx: &Context<Self>) -> impl IntoElement {
+        let theme = Theme::global(cx);
+
         div()
             .size(px(28.0))
             .rounded(px(6.0))
             .flex()
             .items_center()
             .justify_center()
-            .when(has_output, |this| this.bg(colors::file_icon()))
-            .when(!has_output, |this| this.bg(colors::bg_tertiary()))
+            .when(has_output, |this| this.bg(theme.primary))
+            .when(!has_output, |this| this.bg(theme.muted))
             .child(
                 div()
                     .text_xs()
                     .text_color(if has_output {
-                        rgb(0xffffff)
+                        theme.primary_foreground
                     } else {
-                        colors::text_muted()
+                        theme.muted_foreground
                     })
                     .child("📄"),
             )
     }
 
     /// Render the horizontal stats row
-    fn render_stats_row(&self) -> impl IntoElement {
+    fn render_stats_row(&self, cx: &Context<Self>) -> impl IntoElement {
+        let theme = Theme::global(cx);
+
         // Total duration includes any captured pre-roll
         let total_duration = self.stats.duration_secs + self.captured_pre_roll_secs as f64;
         let duration = format!("{:.1}s", total_duration);
@@ -1685,14 +1723,14 @@ impl AppState {
             .gap_3()
             .justify_center()
             .border_b_1()
-            .border_color(colors::border())
+            .border_color(theme.border)
             // Duration stat
             .child(
                 v_flex()
                     .w(px(120.0))
                     .items_center()
                     .p_3()
-                    .bg(colors::bg_tertiary())
+                    .bg(theme.muted)
                     .rounded_md()
                     .child(
                         div()
@@ -1703,7 +1741,7 @@ impl AppState {
                     .child(
                         div()
                             .text_xs()
-                            .text_color(colors::text_muted())
+                            .text_color(theme.muted_foreground)
                             .child("Duration"),
                     ),
             )
@@ -1713,7 +1751,7 @@ impl AppState {
                     .w(px(120.0))
                     .items_center()
                     .p_3()
-                    .bg(colors::bg_tertiary())
+                    .bg(theme.muted)
                     .rounded_md()
                     .child(
                         div()
@@ -1724,7 +1762,7 @@ impl AppState {
                     .child(
                         div()
                             .text_xs()
-                            .text_color(colors::text_muted())
+                            .text_color(theme.muted_foreground)
                             .child("Size"),
                     ),
             )
@@ -1806,6 +1844,10 @@ impl AppState {
                     .child(
                         WaveformView::new(data)
                             .with_trim_selection(trim_selection)
+                            .with_background(theme.muted)
+                            .with_color(theme.primary)
+                            .with_handle_color(theme.primary)
+                            .with_dimmed_color(gpui::hsla(0.0, 0.0, 0.0, 0.5))
                             .render(),
                     ),
             )
@@ -1814,9 +1856,9 @@ impl AppState {
                 h_flex()
                     .justify_between()
                     .text_xs()
-                    .text_color(colors::text_muted())
+                    .text_color(theme.muted_foreground)
                     .child(start_time)
-                    .child(div().text_color(colors::accent()).child(current_time))
+                    .child(div().text_color(theme.primary).child(current_time))
                     .child(end_time),
             )
             // Control buttons
