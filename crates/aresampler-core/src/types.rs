@@ -26,6 +26,17 @@ pub struct AudioSessionInfo {
     pub icon_png: Option<Vec<u8>>,
 }
 
+/// Information about an audio input device (microphone)
+#[derive(Clone, Debug)]
+pub struct InputDevice {
+    /// Unique device identifier used for capture configuration
+    pub id: String,
+    /// Human-readable device name
+    pub name: String,
+    /// Whether this is the system default audio input device
+    pub is_default: bool,
+}
+
 /// Validates and normalizes a sample rate for macOS ScreenCaptureKit
 ///
 /// ScreenCaptureKit supports sample rates of 8000, 16000, 24000, and 48000 Hz.
@@ -54,6 +65,8 @@ pub struct CaptureConfig {
     pub sample_rate: u32,
     pub channels: u16,
     pub bits_per_sample: u16,
+    /// Optional microphone device ID to mix with app audio (macOS 15.0+ only)
+    pub microphone_id: Option<String>,
 }
 
 impl Default for CaptureConfig {
@@ -64,6 +77,7 @@ impl Default for CaptureConfig {
             sample_rate: 48000,
             channels: 2,
             bits_per_sample: 32,
+            microphone_id: None,
         }
     }
 }
@@ -77,6 +91,8 @@ pub struct MonitorConfig {
     pub channels: u16,
     /// Pre-roll buffer duration in seconds (0 = no buffering)
     pub pre_roll_duration_secs: f32,
+    /// Optional microphone device ID to mix with app audio (macOS 15.0+ only)
+    pub microphone_id: Option<String>,
 }
 
 impl Default for MonitorConfig {
@@ -86,6 +102,7 @@ impl Default for MonitorConfig {
             sample_rate: 48000,
             channels: 2,
             pre_roll_duration_secs: 10.0,
+            microphone_id: None,
         }
     }
 }

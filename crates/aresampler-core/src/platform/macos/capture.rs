@@ -1,5 +1,6 @@
 //! macOS audio capture implementation using ScreenCaptureKit
 
+use super::resampler::AudioResampler;
 use crate::process::process_exists;
 use crate::ring_buffer::AudioRingBuffer;
 use crate::types::{
@@ -185,6 +186,10 @@ struct AudioOutputState {
     event_tx: Sender<CaptureEvent>,
     /// PIDs being captured (for per-source stats)
     pids: Vec<u32>,
+    /// Target sample rate for the output
+    target_sample_rate: u32,
+    /// Resampler for handling sample rate mismatches
+    resampler: AudioResampler,
 }
 
 /// Shared state for the monitoring audio handler
@@ -203,6 +208,10 @@ struct MonitorOutputState {
     recording_start_time: Option<Instant>,
     /// PIDs being captured (for per-source stats)
     pids: Vec<u32>,
+    /// Target sample rate for the output
+    target_sample_rate: u32,
+    /// Resampler for handling sample rate mismatches
+    resampler: AudioResampler,
 }
 
 /// Handler for receiving audio samples from ScreenCaptureKit
@@ -213,7 +222,8 @@ struct AudioHandler {
 
 impl SCStreamOutputTrait for AudioHandler {
     fn did_output_sample_buffer(&self, sample_buffer: CMSampleBuffer, of_type: SCStreamOutputType) {
-        if of_type != SCStreamOutputType::Audio {
+        // Accept both app audio and microphone audio
+        if of_type != SCStreamOutputType::Audio && of_type != SCStreamOutputType::Microphone {
             return;
         }
 
@@ -239,15 +249,47 @@ impl SCStreamOutputTrait for AudioHandler {
         }
 
         // Get samples from each channel buffer
-        let channel_samples: Vec<&[f32]> = audio_buffers
+        let channel_samples_raw: Vec<&[f32]> = audio_buffers
             .iter()
             .map(|b| bytes_to_f32_samples(b.data()))
             .collect();
 
         // All channels should have the same number of samples
-        let num_frames = channel_samples.first().map(|s| s.len()).unwrap_or(0);
-        if num_frames == 0 {
+        let num_frames_raw = channel_samples_raw.first().map(|s| s.len()).unwrap_or(0);
+        if num_frames_raw == 0 {
             return;
+        }
+
+        // Detect actual sample rate from format description
+        let actual_rate = sample_buffer
+            .format_description()
+            .and_then(|fd| fd.audio_sample_rate())
+            .map(|r| r as u32)
+            .unwrap_or(state.target_sample_rate);
+
+        // Resample if needed
+        let (mut channel_samples, num_frames): (Vec<Vec<f32>>, usize) = if actual_rate != state.target_sample_rate {
+            // Convert to owned vecs for resampler
+            let input: Vec<Vec<f32>> = channel_samples_raw.iter().map(|s| s.to_vec()).collect();
+            match state.resampler.process(actual_rate, &input) {
+                Some(resampled) => {
+                    let frames = resampled.first().map(|s| s.len()).unwrap_or(0);
+                    (resampled, frames)
+                }
+                None => {
+                    // Resampling failed, use original
+                    (input, num_frames_raw)
+                }
+            }
+        } else {
+            // No resampling needed
+            (channel_samples_raw.iter().map(|s| s.to_vec()).collect(), num_frames_raw)
+        };
+
+        // Upmix mono to stereo if needed (WAV file expects 2 channels)
+        if channel_samples.len() == 1 {
+            let mono = channel_samples[0].clone();
+            channel_samples.push(mono);
         }
 
         let num_channels = channel_samples.len();
@@ -318,7 +360,8 @@ struct MonitorAudioHandler {
 
 impl SCStreamOutputTrait for MonitorAudioHandler {
     fn did_output_sample_buffer(&self, sample_buffer: CMSampleBuffer, of_type: SCStreamOutputType) {
-        if of_type != SCStreamOutputType::Audio {
+        // Accept both app audio and microphone audio
+        if of_type != SCStreamOutputType::Audio && of_type != SCStreamOutputType::Microphone {
             return;
         }
 
@@ -341,14 +384,46 @@ impl SCStreamOutputTrait for MonitorAudioHandler {
         }
 
         // Get samples from each channel buffer
-        let channel_samples: Vec<&[f32]> = audio_buffers
+        let channel_samples_raw: Vec<&[f32]> = audio_buffers
             .iter()
             .map(|b| bytes_to_f32_samples(b.data()))
             .collect();
 
-        let num_frames = channel_samples.first().map(|s| s.len()).unwrap_or(0);
-        if num_frames == 0 {
+        let num_frames_raw = channel_samples_raw.first().map(|s| s.len()).unwrap_or(0);
+        if num_frames_raw == 0 {
             return;
+        }
+
+        // Detect actual sample rate from format description
+        let actual_rate = sample_buffer
+            .format_description()
+            .and_then(|fd| fd.audio_sample_rate())
+            .map(|r| r as u32)
+            .unwrap_or(state.target_sample_rate);
+
+        // Resample if needed
+        let (mut channel_samples, num_frames): (Vec<Vec<f32>>, usize) = if actual_rate != state.target_sample_rate {
+            // Convert to owned vecs for resampler
+            let input: Vec<Vec<f32>> = channel_samples_raw.iter().map(|s| s.to_vec()).collect();
+            match state.resampler.process(actual_rate, &input) {
+                Some(resampled) => {
+                    let frames = resampled.first().map(|s| s.len()).unwrap_or(0);
+                    (resampled, frames)
+                }
+                None => {
+                    // Resampling failed, use original
+                    (input, num_frames_raw)
+                }
+            }
+        } else {
+            // No resampling needed
+            (channel_samples_raw.iter().map(|s| s.to_vec()).collect(), num_frames_raw)
+        };
+
+        // Upmix mono to stereo if needed (WAV file expects 2 channels)
+        if channel_samples.len() == 1 {
+            let mono = channel_samples[0].clone();
+            channel_samples.push(mono);
         }
 
         let num_channels = channel_samples.len();
@@ -463,9 +538,11 @@ fn run_monitor(
     command_rx: &Receiver<CaptureCommand>,
     event_tx: &Sender<CaptureEvent>,
 ) -> Result<()> {
-    // Validate that we have at least one PID
-    if config.pids.is_empty() {
-        return Err(anyhow!("No PIDs specified for capture"));
+    // Validate that we have at least one source (PIDs or microphone)
+    let has_apps = !config.pids.is_empty();
+    let has_microphone = config.microphone_id.is_some();
+    if !has_apps && !has_microphone {
+        return Err(anyhow!("No audio source specified (no PIDs or microphone)"));
     }
 
     // Normalize sample rate to ScreenCaptureKit supported values (8000, 16000, 24000, 48000)
@@ -477,7 +554,7 @@ fn run_monitor(
         );
     }
 
-    // Validate that all processes exist
+    // Validate that all processes exist (if any)
     for &pid in &config.pids {
         if !process_exists(pid) {
             return Err(anyhow!("Process with PID {} does not exist", pid));
@@ -488,7 +565,7 @@ fn run_monitor(
     let content = SCShareableContent::get()
         .map_err(|e| anyhow!("Failed to get shareable content: {:?}", e))?;
 
-    // Find all applications by their PIDs
+    // Find all applications by their PIDs (may be empty for mic-only capture)
     let all_apps = content.applications();
     let apps: Vec<_> = config
         .pids
@@ -501,70 +578,79 @@ fn run_monitor(
         })
         .collect();
 
-    if apps.is_empty() {
+    // For app capture, verify we found the apps
+    if has_apps && apps.is_empty() {
         return Err(anyhow!(
             "No applications found in shareable content for the specified PIDs"
         ));
     }
 
-    // Get the first display
+    // Get the first display (needed for content filter)
     let displays = content.displays();
     let display = displays
         .first()
         .ok_or_else(|| anyhow!("No displays found"))?;
 
-    // Collect windows from target apps
-    let all_windows = content.windows();
-    let app_pids: Vec<_> = apps.iter().map(|a| a.process_id()).collect();
-    let target_windows: Vec<_> = all_windows
-        .iter()
-        .filter(|w| {
-            w.owning_application()
-                .map(|app| app_pids.contains(&app.process_id()))
-                .unwrap_or(false)
-        })
-        .collect();
-
-    // Create content filter
-    let filter = if apps.len() == 1 {
-        // For single app, try window-based capture first (more reliable)
-        if let Some(window) = target_windows.first() {
-            SCContentFilter::builder()
-                .window(window)
-                .build()
-        } else {
-            SCContentFilter::builder()
-                .display(display)
-                .include_applications(&[&apps[0]], &[])
-                .build()
-        }
-    } else {
-        // For multiple apps, use display-level capture with application filter
-        let app_refs: Vec<_> = apps.iter().collect();
+    // Create content filter based on capture mode
+    let filter = if apps.is_empty() {
+        // Microphone-only: use display filter (required by SCStream, but we won't capture app audio)
         SCContentFilter::builder()
             .display(display)
-            .include_applications(&app_refs, &[])
             .build()
+    } else {
+        // Collect windows from target apps
+        let all_windows = content.windows();
+        let app_pids: Vec<_> = apps.iter().map(|a| a.process_id()).collect();
+        let target_windows: Vec<_> = all_windows
+            .iter()
+            .filter(|w| {
+                w.owning_application()
+                    .map(|app| app_pids.contains(&app.process_id()))
+                    .unwrap_or(false)
+            })
+            .collect();
+
+        if apps.len() == 1 {
+            // For single app, try window-based capture first (more reliable)
+            if let Some(window) = target_windows.first() {
+                SCContentFilter::builder()
+                    .window(window)
+                    .build()
+            } else {
+                SCContentFilter::builder()
+                    .display(display)
+                    .include_applications(&[&apps[0]], &[])
+                    .build()
+            }
+        } else {
+            // For multiple apps, use display-level capture with application filter
+            let app_refs: Vec<_> = apps.iter().collect();
+            SCContentFilter::builder()
+                .display(display)
+                .include_applications(&app_refs, &[])
+                .build()
+        }
     };
 
     // Get display dimensions for stream config
-    // Display-level capture may require valid video dimensions even for audio-only
-    let (width, height) = if apps.len() == 1 && target_windows.first().is_some() {
-        // For single window capture, minimal dimensions work
-        (1u32, 1u32)
-    } else {
-        // For display-level capture, use small but valid dimensions
-        (100u32, 100u32)
-    };
+    // Use small dimensions since we only care about audio
+    let (width, height) = (100u32, 100u32);
 
     // Configure the stream for audio capture
     let mut stream_config = SCStreamConfiguration::new();
     stream_config
-        .set_captures_audio(true)
+        .set_captures_audio(has_apps) // Only capture app audio if we have apps
         .set_sample_rate(sample_rate as i32)
         .set_channel_count(config.channels as i32)
         .set_width(width)
         .set_height(height);
+
+    // Enable microphone capture if configured (macOS 15.0+)
+    if let Some(ref mic_id) = config.microphone_id {
+        stream_config
+            .set_captures_microphone(true)
+            .set_microphone_capture_device_id(mic_id);
+    }
 
     // Create ring buffer for pre-roll
     let ring_buffer = AudioRingBuffer::new(
@@ -593,18 +679,32 @@ fn run_monitor(
         total_bytes: 0,
         recording_start_time: None,
         pids: config.pids.clone(),
+        target_sample_rate: sample_rate,
+        resampler: AudioResampler::new(sample_rate, config.channels as usize),
     }));
 
     let stop_flag = Arc::new(AtomicBool::new(false));
 
     // Create the stream with monitor handler
-    let audio_handler = MonitorAudioHandler {
-        state: state.clone(),
-        stop_flag: stop_flag.clone(),
-    };
-
     let mut stream = SCStream::new(&filter, &stream_config);
-    stream.add_output_handler(audio_handler, SCStreamOutputType::Audio);
+
+    // Add handler for app audio if we have apps
+    if has_apps {
+        let audio_handler = MonitorAudioHandler {
+            state: state.clone(),
+            stop_flag: stop_flag.clone(),
+        };
+        stream.add_output_handler(audio_handler, SCStreamOutputType::Audio);
+    }
+
+    // Add handler for microphone audio if configured
+    if has_microphone {
+        let mic_handler = MonitorAudioHandler {
+            state: state.clone(),
+            stop_flag: stop_flag.clone(),
+        };
+        stream.add_output_handler(mic_handler, SCStreamOutputType::Microphone);
+    }
 
     // Start the stream
     stream
@@ -682,9 +782,11 @@ fn run_capture(
     command_rx: &Receiver<CaptureCommand>,
     event_tx: &Sender<CaptureEvent>,
 ) -> Result<()> {
-    // Validate that we have at least one PID
-    if config.pids.is_empty() {
-        return Err(anyhow!("No PIDs specified for capture"));
+    // Validate that we have at least one audio source (PIDs or microphone)
+    let has_apps = !config.pids.is_empty();
+    let has_microphone = config.microphone_id.is_some();
+    if !has_apps && !has_microphone {
+        return Err(anyhow!("No audio source specified (no PIDs or microphone)"));
     }
 
     // Normalize sample rate to ScreenCaptureKit supported values (8000, 16000, 24000, 48000)
@@ -696,10 +798,12 @@ fn run_capture(
         );
     }
 
-    // Validate that all processes exist
-    for &pid in &config.pids {
-        if !process_exists(pid) {
-            return Err(anyhow!("Process with PID {} does not exist", pid));
+    // Validate that all processes exist (only if we have apps to capture)
+    if has_apps {
+        for &pid in &config.pids {
+            if !process_exists(pid) {
+                return Err(anyhow!("Process with PID {} does not exist", pid));
+            }
         }
     }
 
@@ -720,7 +824,8 @@ fn run_capture(
         })
         .collect();
 
-    if apps.is_empty() {
+    // Only require apps if we're capturing app audio (not mic-only)
+    if has_apps && apps.is_empty() {
         return Err(anyhow!(
             "No applications found in shareable content for the specified PIDs"
         ));
@@ -745,7 +850,12 @@ fn run_capture(
         .collect();
 
     // Create content filter
-    let filter = if apps.len() == 1 {
+    let filter = if apps.is_empty() {
+        // Microphone-only capture: use display filter without app audio
+        SCContentFilter::builder()
+            .display(display)
+            .build()
+    } else if apps.len() == 1 {
         // For single app, try window-based capture first (more reliable)
         if let Some(window) = target_windows.first() {
             SCContentFilter::builder()
@@ -779,11 +889,18 @@ fn run_capture(
     // Configure the stream for audio capture
     let mut stream_config = SCStreamConfiguration::new();
     stream_config
-        .set_captures_audio(true)
+        .set_captures_audio(has_apps) // Only capture app audio if we have apps
         .set_sample_rate(sample_rate as i32)
         .set_channel_count(config.channels as i32)
         .set_width(width)
         .set_height(height);
+
+    // Enable microphone capture if configured (macOS 15.0+)
+    if let Some(ref mic_id) = config.microphone_id {
+        stream_config
+            .set_captures_microphone(true)
+            .set_microphone_capture_device_id(mic_id);
+    }
 
     // Set up WAV writer
     let wav_spec = WavSpec {
@@ -811,18 +928,32 @@ fn run_capture(
         last_status_update: Instant::now(),
         event_tx: event_tx.clone(),
         pids: config.pids.clone(),
+        target_sample_rate: sample_rate,
+        resampler: AudioResampler::new(sample_rate, config.channels as usize),
     }));
 
     let stop_flag = Arc::new(AtomicBool::new(false));
 
     // Create the stream with output handler
-    let audio_handler = AudioHandler {
-        state: state.clone(),
-        stop_flag: stop_flag.clone(),
-    };
-
     let mut stream = SCStream::new(&filter, &stream_config);
-    stream.add_output_handler(audio_handler, SCStreamOutputType::Audio);
+
+    // Add handler for app audio if we have apps
+    if has_apps {
+        let audio_handler = AudioHandler {
+            state: state.clone(),
+            stop_flag: stop_flag.clone(),
+        };
+        stream.add_output_handler(audio_handler, SCStreamOutputType::Audio);
+    }
+
+    // Add handler for microphone audio if configured
+    if has_microphone {
+        let mic_handler = AudioHandler {
+            state: state.clone(),
+            stop_flag: stop_flag.clone(),
+        };
+        stream.add_output_handler(mic_handler, SCStreamOutputType::Microphone);
+    }
 
     // Start the stream
     stream

@@ -29,3 +29,4 @@ core-media-rs = "0.3"
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSData", "NSString", "NSURL", "NSDictionary"] }
 objc2-app-kit = { version = "0.3", features = ["NSWorkspace", "NSImage", "NSBitmapImageRep", "NSGraphicsContext"] }
+rubato = "0.16"
