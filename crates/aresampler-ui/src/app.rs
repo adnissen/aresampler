@@ -2,23 +2,27 @@ use crate::playback::{AudioPlayer, load_samples_for_region};
 use crate::source_selection::{
     ProcessItem, SourceEntry, SourceSelectionState, render_placeholder_icon,
 };
+use crate::theme::ThemeRegistry;
 use crate::waveform::{DragHandle, TrimSelection, WaveformData, WaveformView, trim_wav_file};
+use crate::SwitchTheme;
 use aresampler_core::{
     CaptureConfig, CaptureEvent, CaptureSession, CaptureStats, MonitorConfig, PermissionStatus,
     is_capture_available, request_capture_permission,
 };
 use gpui::{
-    Bounds, Context, CursorStyle, ElementId, FontWeight, ImageSource, InteractiveElement,
-    IntoElement, MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Point, Render, Size,
-    StatefulInteractiveElement, Styled, Window, WindowControlArea, div, img, point,
-    prelude::FluentBuilder, px, relative, rgb,
+    Bounds, Context, Corner, CursorStyle, ElementId, FontWeight, ImageSource, InteractiveElement,
+    IntoElement, MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Point, Render,
+    SharedString, Size, StatefulInteractiveElement, Styled, Window, WindowControlArea, div, img,
+    point, prelude::FluentBuilder, px, relative, rgb, svg,
 };
 use gpui_component::{
+    Theme,
     button::{Button, ButtonVariants},
     h_flex,
+    menu::DropdownMenu,
     scroll::ScrollableElement,
     select::{SearchableVec, Select, SelectEvent},
-    v_flex, Theme,
+    v_flex,
 };
 use std::ops::DerefMut;
 use std::path::PathBuf;
@@ -154,7 +158,7 @@ impl AppState {
             source_selection,
             output_path: None,
             pre_roll_seconds: 0.0,
-            sample_rate: 48000,  // Apple recommends 48kHz for ScreenCaptureKit
+            sample_rate: 48000, // Apple recommends 48kHz for ScreenCaptureKit
             is_monitoring: false,
             is_recording: false,
             stats: CaptureStats::default(),
@@ -1011,12 +1015,8 @@ impl Render for AppState {
                     .when(self.waveform_data.is_none() || self.is_recording, |this| {
                         // ScreenCaptureKit supported sample rates: 8000, 16000, 24000, 48000 Hz
                         // https://developer.apple.com/documentation/screencapturekit/scstreamconfiguration/samplerate
-                        let sample_rate_options: [(u32, &str); 4] = [
-                            (8000, "8k"),
-                            (16000, "16k"),
-                            (24000, "24k"),
-                            (48000, "48k"),
-                        ];
+                        let sample_rate_options: [(u32, &str); 4] =
+                            [(8000, "8k"), (16000, "16k"), (24000, "24k"), (48000, "48k")];
                         let current_sample_rate = self.sample_rate;
                         let is_disabled = self.is_recording;
 
@@ -1194,9 +1194,17 @@ impl Render for AppState {
 impl AppState {
     /// Render the header with app name (34px height)
     /// On macOS: 80px left padding for traffic lights
-    /// On Windows: minimize/close buttons on right, draggable area
+    /// On Windows: hamburger menu + minimize/close buttons, draggable area
     fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let is_windows = cfg!(target_os = "windows");
+
+        // Render hamburger menu first (Windows only) to avoid borrow issues
+        let hamburger_menu = if is_windows {
+            Some(self.render_hamburger_menu(cx).into_any_element())
+        } else {
+            None
+        };
+
         let theme = Theme::global(cx);
 
         h_flex()
@@ -1205,6 +1213,8 @@ impl AppState {
             .flex_shrink_0()
             .border_b_1()
             .border_color(theme.border)
+            // Hamburger menu button (Windows only)
+            .when_some(hamburger_menu, |this, menu| this.child(menu))
             // Draggable title area (contains label and fills remaining space)
             .child(
                 h_flex()
@@ -1212,9 +1222,8 @@ impl AppState {
                     .flex_1()
                     .h_full()
                     .items_center()
-                    // On macOS: left padding for traffic lights. On Windows: small padding for label
+                    // On macOS: left padding for traffic lights. On Windows: no extra padding (hamburger is there)
                     .when(!is_windows, |this| this.pl(px(80.0)))
-                    .when(is_windows, |this| this.pl_3())
                     // Mark this area as a window drag region for the platform
                     .window_control_area(WindowControlArea::Drag)
                     // App name label
@@ -1289,6 +1298,42 @@ impl AppState {
             })
     }
 
+    /// Render the theme palette button with dropdown theme picker (Windows only)
+    fn render_hamburger_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::global(cx);
+        let current_theme_name = theme.theme_name().to_string();
+        let icon_color = theme.foreground;
+
+        // Build the palette button with a dropdown menu showing themes directly
+        Button::new("theme-menu")
+            .ghost()
+            .compact()
+            .child(
+                // Palette icon SVG
+                svg()
+                    .path("icons/palette.svg")
+                    .size(px(16.0))
+                    .text_color(icon_color),
+            )
+            .dropdown_menu_with_anchor(Corner::TopLeft, move |menu, _window, _cx| {
+                // Build the theme list directly (scrollable)
+                let current_name = current_theme_name.clone();
+                let registry = ThemeRegistry::new();
+
+                let mut menu = menu.scrollable(true).max_h(px(300.0));
+                for theme_variant in &registry.themes {
+                    let is_current = theme_variant.name == current_name;
+                    let theme_name: SharedString = theme_variant.name.clone().into();
+                    menu = menu.menu_with_check(
+                        theme_variant.name.clone(),
+                        is_current,
+                        Box::new(SwitchTheme(theme_name)),
+                    );
+                }
+                menu
+            })
+    }
+
     /// Render the arrow divider between source and output cards
     fn render_arrow_divider(&self, cx: &Context<Self>) -> impl IntoElement {
         let theme = Theme::global(cx);
@@ -1301,7 +1346,12 @@ impl AppState {
             // Left line segment
             .child(div().flex_1().h(px(1.0)).bg(theme.border))
             // Arrow icon in the middle
-            .child(div().text_sm().text_color(theme.muted_foreground).child("↓"))
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(theme.muted_foreground)
+                    .child("↓"),
+            )
             // Right line segment
             .child(div().flex_1().h(px(1.0)).bg(theme.border))
     }
@@ -1319,7 +1369,12 @@ impl AppState {
             // Left space segment
             .child(div().flex_1().h(px(1.0)))
             // Plus icon in the middle
-            .child(div().text_sm().text_color(theme.muted_foreground).child("+"))
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(theme.muted_foreground)
+                    .child("+"),
+            )
             // Right space segment
             .child(div().flex_1().h(px(1.0)))
     }
@@ -1518,9 +1573,7 @@ impl AppState {
                                         })
                                         // Chevron (only show for first source, hide when locked)
                                         .when(is_first && !is_locked, |this| {
-                                            this.child(
-                                                div().text_color(theme_muted_fg).child("▼"),
-                                            )
+                                            this.child(div().text_color(theme_muted_fg).child("▼"))
                                         }),
                                 )
                                 // Level meter (inside the card, below the content row) - hide when waveform displayed (but show during recording)
@@ -1909,13 +1962,12 @@ impl AppState {
                             .text_color(theme.foreground)
                             .when(!is_modified, |this| this.opacity(0.5).cursor_not_allowed())
                             .when(is_modified, |this| {
-                                this.hover(|s| s.bg(theme.secondary_hover))
-                                    .on_mouse_down(
-                                        gpui::MouseButton::Left,
-                                        cx.listener(|this, _, window, cx| {
-                                            this.cut_audio(window, cx);
-                                        }),
-                                    )
+                                this.hover(|s| s.bg(theme.secondary_hover)).on_mouse_down(
+                                    gpui::MouseButton::Left,
+                                    cx.listener(|this, _, window, cx| {
+                                        this.cut_audio(window, cx);
+                                    }),
+                                )
                             })
                             .child("Cut Selection"),
                     )

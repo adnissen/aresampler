@@ -130,6 +130,7 @@ dependencies = [
  "hound",
  "image",
  "rodio",
+ "rust-embed",
  "serde",
  "serde_json",
 ]
