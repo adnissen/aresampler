@@ -2,9 +2,10 @@
 #![windows_subsystem = "windows"]
 use anyhow::Result;
 use gpui::*;
-use gpui_component::{Theme, init as init_components};
+use gpui_component::init as init_components;
 
 mod app;
+mod assets;
 mod config;
 mod playback;
 mod source_selection;
@@ -17,11 +18,11 @@ actions!([Quit]);
 /// Action to change the application theme
 #[derive(Action, Clone, PartialEq)]
 #[action(no_json)]
-struct SwitchTheme(SharedString);
+pub struct SwitchTheme(pub SharedString);
 
 fn main() -> Result<()> {
-    // Initialize the GPUI application
-    let app = Application::new();
+    // Initialize the GPUI application with embedded assets
+    let app = Application::new().with_assets(assets::Assets);
 
     app.run(move |cx| {
         // Initialize gpui-component library
