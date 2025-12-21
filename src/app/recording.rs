@@ -1,8 +1,8 @@
 //! Recording and monitoring: start/stop, event polling, state transitions
 
+use super::waveform::{TrimSelection, WaveformData};
 use super::AppState;
 use crate::core::{CaptureConfig, CaptureEvent, CaptureSession, CaptureStats, MonitorConfig};
-use crate::waveform::{TrimSelection, WaveformData};
 use gpui::{Context, Window};
 use std::sync::Arc;
 

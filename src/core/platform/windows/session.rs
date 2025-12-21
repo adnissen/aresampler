@@ -3,7 +3,7 @@
 //! This approach enumerates all visible GUI applications, similar to how
 //! macOS ScreenCaptureKit returns all capturable applications.
 
-use crate::types::AudioSessionInfo;
+use crate::core::types::AudioSessionInfo;
 use anyhow::Result;
 use std::collections::HashSet;
 use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
@@ -82,29 +82,29 @@ pub fn enumerate_audio_sessions() -> Result<Vec<AudioSessionInfo>> {
 /// Called for each top-level window. Filters for visible windows with titles
 /// and collects their process IDs.
 unsafe extern "system" fn enum_windows_callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
-    let pids = &mut *(lparam.0 as *mut Vec<u32>);
+    let pids = unsafe { &mut *(lparam.0 as *mut Vec<u32>) };
 
     // Skip invisible windows
-    if !IsWindowVisible(hwnd).as_bool() {
+    if !unsafe { IsWindowVisible(hwnd) }.as_bool() {
         return BOOL(1); // Continue enumeration
     }
 
     // Skip windows without a title (likely background/system windows)
-    let title_len = GetWindowTextLengthW(hwnd);
+    let title_len = unsafe { GetWindowTextLengthW(hwnd) };
     if title_len == 0 {
         return BOOL(1); // Continue enumeration
     }
 
     // Get the window title to verify it's a real window
     let mut title_buf = vec![0u16; (title_len + 1) as usize];
-    let actual_len = GetWindowTextW(hwnd, &mut title_buf);
+    let actual_len = unsafe { GetWindowTextW(hwnd, &mut title_buf) };
     if actual_len == 0 {
         return BOOL(1); // Continue enumeration
     }
 
     // Get the process ID for this window
     let mut pid: u32 = 0;
-    GetWindowThreadProcessId(hwnd, Some(&mut pid));
+    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
 
     if pid != 0 {
         pids.push(pid);

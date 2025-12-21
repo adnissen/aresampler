@@ -3,7 +3,7 @@
 //! Microphone input is not yet implemented on Windows.
 //! This module returns an empty list.
 
-use crate::types::InputDevice;
+use crate::core::types::InputDevice;
 use anyhow::Result;
 
 /// Enumerate all available audio input devices (microphones).

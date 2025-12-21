@@ -2,8 +2,8 @@
 
 use super::AppState;
 use gpui::{
-    Context, FontWeight, InteractiveElement, IntoElement, ParentElement,
-    StatefulInteractiveElement, Styled, prelude::FluentBuilder, px,
+    Context, FontWeight, InteractiveElement, IntoElement, ParentElement, Styled,
+    prelude::FluentBuilder, px,
 };
 use gpui_component::{
     Theme,

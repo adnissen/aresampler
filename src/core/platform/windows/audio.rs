@@ -1,6 +1,6 @@
 //! Windows audio initialization
 
-use crate::types::PermissionStatus;
+use crate::core::types::PermissionStatus;
 use anyhow::Result;
 
 /// Initialize COM for WASAPI (must be called before any WASAPI operations)

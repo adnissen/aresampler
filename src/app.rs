@@ -10,16 +10,15 @@ mod recording;
 mod sources;
 mod waveform;
 
-// Re-export colors for external use
-pub use colors::*;
+// Re-export types for use elsewhere in the crate
+pub use playback::AudioPlayer;
+pub use waveform::{DragHandle, TrimSelection, WaveformData, WaveformError};
 
-use crate::playback::AudioPlayer;
 use crate::source_selection::SourceSelectionState;
-use crate::waveform::{DragHandle, TrimSelection, WaveformData};
 use crate::core::{CaptureSession, CaptureStats, CaptureEvent};
 use gpui::{
     Bounds, Context, ElementId, FontWeight, InteractiveElement, IntoElement, ParentElement, Pixels,
-    Render, StatefulInteractiveElement, Styled, Window, prelude::FluentBuilder, px, relative, rgb,
+    Render, Styled, Window, prelude::FluentBuilder, px, relative, rgb,
 };
 use gpui_component::{
     Theme,

@@ -5,7 +5,7 @@ use crate::theme::ThemeRegistry;
 use crate::SwitchTheme;
 use gpui::{
     Context, Corner, FontWeight, InteractiveElement, IntoElement, ParentElement, SharedString,
-    StatefulInteractiveElement, Styled, WindowControlArea, prelude::FluentBuilder, px, svg,
+    Styled, WindowControlArea, prelude::FluentBuilder, px, svg,
 };
 use gpui_component::{
     Theme,

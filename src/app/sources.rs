@@ -5,7 +5,7 @@ use super::{colors, AppState};
 use crate::source_selection::{SourceEntry, SourceItem, render_placeholder_icon};
 use gpui::{
     Context, ElementId, FontWeight, ImageSource, InteractiveElement, IntoElement, ParentElement,
-    StatefulInteractiveElement, Styled, Window, prelude::FluentBuilder, img, px, relative,
+    Styled, Window, prelude::FluentBuilder, img, px, relative,
 };
 use gpui_component::{
     Theme,

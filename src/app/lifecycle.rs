@@ -1,10 +1,10 @@
 //! Application lifecycle: initialization, permissions, file browsing, frame scheduling
 
+use super::playback::AudioPlayer;
+use super::waveform::TrimSelection;
 use super::AppState;
 use crate::core::{is_capture_available, request_capture_permission, PermissionStatus};
-use crate::playback::AudioPlayer;
 use crate::source_selection::SourceSelectionState;
-use crate::waveform::TrimSelection;
 use crate::core::CaptureStats;
 use gpui::{Context, Window};
 use std::time::Instant;

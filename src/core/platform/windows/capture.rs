@@ -1,8 +1,8 @@
 //! Windows audio capture implementation using WASAPI
 
-use crate::process::process_exists;
-use crate::ring_buffer::AudioRingBuffer;
-use crate::types::{
+use crate::core::process::process_exists;
+use crate::core::ring_buffer::AudioRingBuffer;
+use crate::core::types::{
     CaptureCommand, CaptureConfig, CaptureEvent, CaptureStats, MonitorConfig, SourceStats,
 };
 use anyhow::{anyhow, Context, Result};

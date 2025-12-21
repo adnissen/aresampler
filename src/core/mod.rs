@@ -44,23 +44,28 @@ pub mod process;
 pub mod ring_buffer;
 pub mod types;
 
-// Re-export all public types from types module
+// Re-export all public types from types module (some may only be used externally)
+#[allow(unused_imports)]
 pub use types::{
     AudioSessionInfo, CaptureCommand, CaptureConfig, CaptureEvent, CaptureStats, InputDevice,
     MonitorConfig, PermissionStatus, ProcessInfo, SourceStats,
 };
 
 // Re-export ring buffer
+#[allow(unused_imports)]
 pub use ring_buffer::AudioRingBuffer;
 
 // Re-export process utilities
+#[allow(unused_imports)]
 pub use process::{get_parent_pid, get_process_info, process_exists};
 
 // Re-export platform-specific implementations through a unified API
+#[allow(unused_imports)]
 pub use platform::{
     enumerate_audio_sessions, enumerate_input_devices, get_app_icon_png, initialize_audio,
     is_capture_available, request_capture_permission, CaptureSession,
 };
 
 // Re-export error types
+#[allow(unused_imports)]
 pub use error::CaptureError;
