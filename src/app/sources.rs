@@ -234,7 +234,6 @@ impl AppState {
                                                 gpui::div()
                                                     .size(px(28.0))
                                                     .rounded(px(6.0))
-                                                    .bg(gpui::rgb(0x4a9eff))
                                                     .flex()
                                                     .items_center()
                                                     .justify_center()
