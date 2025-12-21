@@ -2,28 +2,28 @@
 //!
 //! Uses rubato for high-quality sinc interpolation resampling.
 
-use rubato::{
-    Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
-};
+use rubato::{Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction};
 
 /// Resampler that handles sample rate conversion for audio streams.
 /// Lazily initializes when a sample rate mismatch is detected.
-/// Automatically adapts to the actual number of channels in the input.
 pub struct AudioResampler {
     resampler: Option<SincFixedIn<f32>>,
     current_input_rate: Option<u32>,
-    current_channels: Option<usize>,
     output_rate: u32,
+    channels: usize,
+    /// Buffer for resampler output
+    output_buffer: Vec<Vec<f32>>,
 }
 
 impl AudioResampler {
     /// Create a new resampler targeting the specified output sample rate.
-    pub fn new(output_rate: u32, _channels: usize) -> Self {
+    pub fn new(output_rate: u32, channels: usize) -> Self {
         Self {
             resampler: None,
             current_input_rate: None,
-            current_channels: None,
             output_rate,
+            channels,
+            output_buffer: vec![Vec::new(); channels],
         }
     }
 
@@ -37,23 +37,15 @@ impl AudioResampler {
             return None;
         }
 
-        let num_channels = samples.len();
-        if num_channels == 0 {
-            return None;
-        }
-
-        // Initialize or reinitialize resampler if input rate or channel count changed
-        let needs_reinit = self.current_input_rate != Some(input_rate)
-            || self.current_channels != Some(num_channels);
-
-        if needs_reinit {
-            self.init_resampler(input_rate, num_channels);
+        // Initialize or reinitialize resampler if input rate changed
+        if self.current_input_rate != Some(input_rate) {
+            self.init_resampler(input_rate);
         }
 
         let resampler = self.resampler.as_mut()?;
 
-        // Process the samples using process_partial to handle variable buffer sizes
-        match resampler.process_partial(Some(samples), None) {
+        // Process the samples
+        match resampler.process(samples, None) {
             Ok(output) => Some(output),
             Err(e) => {
                 eprintln!("Resampling error: {:?}", e);
@@ -62,8 +54,8 @@ impl AudioResampler {
         }
     }
 
-    /// Initialize the resampler for a specific input rate and channel count
-    fn init_resampler(&mut self, input_rate: u32, channels: usize) {
+    /// Initialize the resampler for a specific input rate
+    fn init_resampler(&mut self, input_rate: u32) {
         let resample_ratio = self.output_rate as f64 / input_rate as f64;
 
         // High quality sinc interpolation parameters
@@ -85,23 +77,26 @@ impl AudioResampler {
             2.0, // max relative ratio (allows for some rate variation)
             params,
             chunk_size,
-            channels,
+            self.channels,
         ) {
             Ok(r) => {
                 self.resampler = Some(r);
                 self.current_input_rate = Some(input_rate);
-                self.current_channels = Some(channels);
                 eprintln!(
-                    "Audio resampler initialized: {} Hz -> {} Hz, {} channels (ratio: {:.4})",
-                    input_rate, self.output_rate, channels, resample_ratio
+                    "Audio resampler initialized: {} Hz -> {} Hz (ratio: {:.4})",
+                    input_rate, self.output_rate, resample_ratio
                 );
             }
             Err(e) => {
                 eprintln!("Failed to create resampler: {:?}", e);
                 self.resampler = None;
                 self.current_input_rate = None;
-                self.current_channels = None;
             }
         }
+    }
+
+    /// Get the target output sample rate
+    pub fn output_rate(&self) -> u32 {
+        self.output_rate
     }
 }

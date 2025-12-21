@@ -5,7 +5,6 @@ mod capture;
 mod icon;
 mod input_device;
 mod permission;
-mod resampler;
 mod session;
 
 pub use audio::initialize_audio;
