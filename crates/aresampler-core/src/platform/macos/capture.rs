@@ -23,35 +23,60 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-/// Audio source type for mixing
+/// Audio source type for channel routing
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AudioSourceType {
     App,
     Microphone,
 }
 
-/// Mixing buffer that accumulates samples from multiple sources and mixes them
-struct AudioMixingBuffer {
-    /// Accumulated app audio samples (interleaved)
+/// Channel buffer that accumulates samples from multiple sources and interleaves them
+/// to separate channels (app on channels 1-2, mic on channels 3-4)
+struct AudioChannelBuffer {
+    /// Accumulated app audio samples (interleaved stereo: L, R, L, R, ...)
     app_buffer: VecDeque<f32>,
-    /// Accumulated microphone audio samples (interleaved)
+    /// Accumulated microphone audio samples (interleaved stereo: L, R, L, R, ...)
     mic_buffer: VecDeque<f32>,
-    /// Number of channels
-    channels: usize,
+    /// Number of input channels per source (typically 2 for stereo)
+    input_channels: usize,
+    /// Number of output channels (2 if single source, 4 if both sources)
+    output_channels: usize,
     /// Whether we're capturing app audio
     has_app_audio: bool,
     /// Whether we're capturing mic audio
     has_mic_audio: bool,
+    /// Whether we've started outputting (after initial sync)
+    started: bool,
+    /// Minimum frames to buffer before starting (for initial sync)
+    min_buffer_frames: usize,
 }
 
-impl AudioMixingBuffer {
-    fn new(channels: usize, has_app_audio: bool, has_mic_audio: bool) -> Self {
+impl AudioChannelBuffer {
+    fn new(input_channels: usize, has_app_audio: bool, has_mic_audio: bool) -> Self {
+        // Output channels: 2 per active source
+        let output_channels = if has_app_audio && has_mic_audio {
+            input_channels * 2 // 4 channels: app L/R + mic L/R
+        } else {
+            input_channels // 2 channels: just one source
+        };
+
+        // Buffer ~50ms of audio at 48kHz before starting output (for sync)
+        // This gives both sources time to start delivering
+        let min_buffer_frames = if has_app_audio && has_mic_audio {
+            2400 // ~50ms at 48kHz
+        } else {
+            0 // No buffering needed for single source
+        };
+
         Self {
             app_buffer: VecDeque::new(),
             mic_buffer: VecDeque::new(),
-            channels,
+            input_channels,
+            output_channels,
             has_app_audio,
             has_mic_audio,
+            started: false,
+            min_buffer_frames,
         }
     }
 
@@ -63,10 +88,10 @@ impl AudioMixingBuffer {
         }
     }
 
-    /// Drain and mix available samples from all active sources
-    /// Returns interleaved samples that have been mixed together
-    fn drain_mixed(&mut self) -> Vec<f32> {
-        // If only one source is active, just drain that source
+    /// Drain and interleave available samples from all active sources
+    /// Returns interleaved samples: [app_L, app_R, mic_L, mic_R] per frame when both active
+    fn drain_interleaved(&mut self) -> Vec<f32> {
+        // If only one source is active, just drain that source (2-channel output)
         if self.has_app_audio && !self.has_mic_audio {
             return self.app_buffer.drain(..).collect();
         }
@@ -74,39 +99,48 @@ impl AudioMixingBuffer {
             return self.mic_buffer.drain(..).collect();
         }
 
-        // Both sources active - mix them together
-        // We need to wait for samples from both sources before mixing
-        // Mix the minimum number of samples available from both
-        let available_samples = self.app_buffer.len().min(self.mic_buffer.len());
+        // Both sources active - interleave to 4 channels
+        let app_frames = self.app_buffer.len() / self.input_channels;
+        let mic_frames = self.mic_buffer.len() / self.input_channels;
 
-        if available_samples == 0 {
+        // Wait for both sources to have minimum buffer before starting
+        if !self.started {
+            if app_frames >= self.min_buffer_frames && mic_frames >= self.min_buffer_frames {
+                self.started = true;
+            } else {
+                return Vec::new();
+            }
+        }
+
+        // Once started, output the minimum of both sources to stay synchronized
+        let available_frames = app_frames.min(mic_frames);
+
+        if available_frames == 0 {
             return Vec::new();
         }
 
-        // Align to frame boundaries (channels samples per frame)
-        let available_frames = available_samples / self.channels;
-        let samples_to_mix = available_frames * self.channels;
+        // Output: 4 samples per frame (app_L, app_R, mic_L, mic_R)
+        let mut interleaved = Vec::with_capacity(available_frames * self.output_channels);
 
-        if samples_to_mix == 0 {
-            return Vec::new();
+        for _ in 0..available_frames {
+            // Pop one frame from app (L, R)
+            let app_l = self.app_buffer.pop_front().unwrap_or(0.0);
+            let app_r = self.app_buffer.pop_front().unwrap_or(0.0);
+            // Pop one frame from mic (L, R)
+            let mic_l = self.mic_buffer.pop_front().unwrap_or(0.0);
+            let mic_r = self.mic_buffer.pop_front().unwrap_or(0.0);
+            // Interleave: app channels first, then mic channels
+            interleaved.push(app_l);
+            interleaved.push(app_r);
+            interleaved.push(mic_l);
+            interleaved.push(mic_r);
         }
 
-        let mut mixed = Vec::with_capacity(samples_to_mix);
-
-        for _ in 0..samples_to_mix {
-            let app_sample = self.app_buffer.pop_front().unwrap_or(0.0);
-            let mic_sample = self.mic_buffer.pop_front().unwrap_or(0.0);
-            // Simple sum mixing - samples are already normalized floats
-            // Clamp to prevent clipping
-            let mixed_sample = (app_sample + mic_sample).clamp(-1.0, 1.0);
-            mixed.push(mixed_sample);
-        }
-
-        mixed
+        interleaved
     }
 
     /// Drain all remaining samples (for when stopping capture)
-    /// This handles any leftover samples that couldn't be mixed due to timing
+    /// This handles any leftover samples that couldn't be interleaved due to timing
     fn drain_remaining(&mut self) -> Vec<f32> {
         // If only one source, drain normally
         if self.has_app_audio && !self.has_mic_audio {
@@ -116,17 +150,25 @@ impl AudioMixingBuffer {
             return self.mic_buffer.drain(..).collect();
         }
 
-        // Both sources - mix what we can, then append remainder from whichever has more
-        let mut result = self.drain_mixed();
+        // Both sources - force started flag and drain what we can
+        self.started = true;
+        let mut result = self.drain_interleaved();
 
-        // Append any remaining samples from whichever buffer still has data
-        // (treat the missing source as silence)
-        result.extend(self.app_buffer.drain(..));
-        result.extend(self.mic_buffer.drain(..));
+        // Handle any remaining samples by padding with silence
+        // This ensures we output complete 4-channel frames
+        while !self.app_buffer.is_empty() || !self.mic_buffer.is_empty() {
+            let app_l = self.app_buffer.pop_front().unwrap_or(0.0);
+            let app_r = self.app_buffer.pop_front().unwrap_or(0.0);
+            let mic_l = self.mic_buffer.pop_front().unwrap_or(0.0);
+            let mic_r = self.mic_buffer.pop_front().unwrap_or(0.0);
+            result.push(app_l);
+            result.push(app_r);
+            result.push(mic_l);
+            result.push(mic_r);
+        }
 
         result
     }
-
 }
 
 /// Capture mode for the session
@@ -292,10 +334,10 @@ struct AudioOutputState {
     event_tx: Sender<CaptureEvent>,
     /// PIDs being captured (for per-source stats)
     pids: Vec<u32>,
-    /// Mixing buffer for combining app and mic audio
-    mixing_buffer: AudioMixingBuffer,
-    /// Number of channels for frame counting
-    channels: usize,
+    /// Channel buffer for interleaving app and mic audio to separate channels
+    channel_buffer: AudioChannelBuffer,
+    /// Number of output channels (2 for single source, 4 for both)
+    output_channels: usize,
     /// Last RMS values for app audio (left, right)
     last_app_rms: (f32, f32),
     /// Last RMS values for mic audio (left, right)
@@ -318,10 +360,10 @@ struct MonitorOutputState {
     recording_start_time: Option<Instant>,
     /// PIDs being captured (for per-source stats)
     pids: Vec<u32>,
-    /// Mixing buffer for combining app and mic audio
-    mixing_buffer: AudioMixingBuffer,
-    /// Number of channels for frame counting
-    channels: usize,
+    /// Channel buffer for interleaving app and mic audio to separate channels
+    channel_buffer: AudioChannelBuffer,
+    /// Number of output channels (2 for single source, 4 for both)
+    output_channels: usize,
     /// Last RMS values for app audio (left, right)
     last_app_rms: (f32, f32),
     /// Last RMS values for mic audio (left, right)
@@ -412,22 +454,22 @@ impl SCStreamOutputTrait for AudioHandler {
             }
         }
 
-        // Push to mixing buffer
-        state.mixing_buffer.push(self.audio_source, &interleaved);
+        // Push to channel buffer
+        state.channel_buffer.push(self.audio_source, &interleaved);
 
-        // Drain mixed samples and write to WAV
-        let mixed_samples = state.mixing_buffer.drain_mixed();
-        let mixed_frames = mixed_samples.len() / state.channels;
+        // Drain interleaved samples and write to WAV
+        let output_samples = state.channel_buffer.drain_interleaved();
+        let output_frames = output_samples.len() / state.output_channels;
 
-        for &sample in &mixed_samples {
+        for &sample in &output_samples {
             if state.wav_writer.write_sample(sample).is_err() {
                 return;
             }
         }
 
-        if !mixed_samples.is_empty() {
-            let num_bytes = mixed_samples.len() * 4; // f32 = 4 bytes
-            state.total_frames += mixed_frames as u64;
+        if !output_samples.is_empty() {
+            let num_bytes = output_samples.len() * 4; // f32 = 4 bytes
+            state.total_frames += output_frames as u64;
             state.total_bytes += num_bytes as u64;
         }
 
@@ -455,7 +497,7 @@ impl SCStreamOutputTrait for AudioHandler {
                 duration_secs: duration.as_secs_f64(),
                 total_frames: state.total_frames,
                 file_size_bytes: state.total_bytes,
-                buffer_frames: mixed_frames,
+                buffer_frames: output_frames,
                 is_recording: true,
                 is_monitoring: false,
                 pre_roll_buffer_secs: 0.0,
@@ -549,32 +591,32 @@ impl SCStreamOutputTrait for MonitorAudioHandler {
             }
         }
 
-        // Push to mixing buffer
-        state.mixing_buffer.push(self.audio_source, &interleaved);
+        // Push to channel buffer
+        state.channel_buffer.push(self.audio_source, &interleaved);
 
-        // Drain mixed samples
-        let mixed_samples = state.mixing_buffer.drain_mixed();
-        let mixed_frames = mixed_samples.len() / state.channels;
+        // Drain interleaved samples
+        let output_samples = state.channel_buffer.drain_interleaved();
+        let output_frames = output_samples.len() / state.output_channels;
 
         match state.mode {
             CaptureMode::Monitoring => {
-                // Push mixed samples to ring buffer
-                if !mixed_samples.is_empty() {
-                    state.ring_buffer.push(&mixed_samples);
+                // Push interleaved samples to ring buffer
+                if !output_samples.is_empty() {
+                    state.ring_buffer.push(&output_samples);
                 }
             }
             CaptureMode::Recording => {
-                // Write mixed samples to WAV file
+                // Write interleaved samples to WAV file
                 if let Some(ref mut wav_writer) = state.wav_writer {
-                    for &sample in &mixed_samples {
+                    for &sample in &output_samples {
                         if wav_writer.write_sample(sample).is_err() {
                             return;
                         }
                     }
                 }
-                if !mixed_samples.is_empty() {
-                    let num_bytes = mixed_samples.len() * 4; // f32 = 4 bytes
-                    state.total_frames += mixed_frames as u64;
+                if !output_samples.is_empty() {
+                    let num_bytes = output_samples.len() * 4; // f32 = 4 bytes
+                    state.total_frames += output_frames as u64;
                     state.total_bytes += num_bytes as u64;
                 }
             }
@@ -603,7 +645,7 @@ impl SCStreamOutputTrait for MonitorAudioHandler {
                     duration_secs: state.start_time.elapsed().as_secs_f64(),
                     total_frames: 0,
                     file_size_bytes: 0,
-                    buffer_frames: mixed_frames,
+                    buffer_frames: output_frames,
                     is_recording: false,
                     is_monitoring: true,
                     pre_roll_buffer_secs: state.ring_buffer.duration_secs(),
@@ -620,7 +662,7 @@ impl SCStreamOutputTrait for MonitorAudioHandler {
                         duration_secs: duration,
                         total_frames: state.total_frames,
                         file_size_bytes: state.total_bytes,
-                        buffer_frames: mixed_frames,
+                        buffer_frames: output_frames,
                         is_recording: true,
                         is_monitoring: false,
                         pre_roll_buffer_secs: 0.0,
@@ -765,20 +807,27 @@ fn run_monitor(
             .set_microphone_capture_device_id(mic_id);
     }
 
-    // Create ring buffer for pre-roll
-    let ring_buffer =
-        AudioRingBuffer::new(config.pre_roll_duration_secs, sample_rate, config.channels);
+    // Calculate output channels: 4 if both sources active, 2 otherwise
+    let output_channels: u16 = if has_apps && has_microphone {
+        config.channels * 2 // 4 channels: app L/R + mic L/R
+    } else {
+        config.channels // 2 channels: single source
+    };
 
-    // WAV spec for when we transition to recording
+    // Create ring buffer for pre-roll (sized for output channel count)
+    let ring_buffer =
+        AudioRingBuffer::new(config.pre_roll_duration_secs, sample_rate, output_channels);
+
+    // WAV spec for when we transition to recording (uses output channel count)
     let wav_spec = WavSpec {
-        channels: config.channels,
+        channels: output_channels,
         sample_rate,
         bits_per_sample: 32,
         sample_format: SampleFormat::Float,
     };
 
-    // Create mixing buffer for combining app and mic audio
-    let mixing_buffer = AudioMixingBuffer::new(config.channels as usize, has_apps, has_microphone);
+    // Create channel buffer for interleaving app and mic audio to separate channels
+    let channel_buffer = AudioChannelBuffer::new(config.channels as usize, has_apps, has_microphone);
 
     // Create shared state for monitoring
     let state = Arc::new(Mutex::new(MonitorOutputState {
@@ -792,8 +841,8 @@ fn run_monitor(
         total_bytes: 0,
         recording_start_time: None,
         pids: config.pids.clone(),
-        mixing_buffer,
-        channels: config.channels as usize,
+        channel_buffer,
+        output_channels: output_channels as usize,
         last_app_rms: (-60.0, -60.0),
         last_mic_rms: (-60.0, -60.0),
     }));
@@ -886,8 +935,8 @@ fn run_monitor(
 
     // Finalize WAV file if we were recording
     if let Ok(mut state) = state.lock() {
-        // Drain any remaining samples from the mixing buffer
-        let remaining = state.mixing_buffer.drain_remaining();
+        // Drain any remaining samples from the channel buffer
+        let remaining = state.channel_buffer.drain_remaining();
 
         if let Some(ref mut wav_writer) = state.wav_writer {
             for &sample in &remaining {
@@ -1024,9 +1073,16 @@ fn run_capture(
             .set_microphone_capture_device_id(mic_id);
     }
 
-    // Set up WAV writer
+    // Calculate output channels: 4 if both sources active, 2 otherwise
+    let output_channels: u16 = if has_apps && has_microphone {
+        config.channels * 2 // 4 channels: app L/R + mic L/R
+    } else {
+        config.channels // 2 channels: single source
+    };
+
+    // Set up WAV writer with output channel count
     let wav_spec = WavSpec {
-        channels: config.channels,
+        channels: output_channels,
         sample_rate,
         bits_per_sample: 32,
         sample_format: SampleFormat::Float,
@@ -1041,8 +1097,8 @@ fn run_capture(
     let buf_writer = BufWriter::new(file);
     let wav_writer = WavWriter::new(buf_writer, wav_spec).context("Failed to create WAV writer")?;
 
-    // Create mixing buffer for combining app and mic audio
-    let mixing_buffer = AudioMixingBuffer::new(config.channels as usize, has_apps, has_microphone);
+    // Create channel buffer for interleaving app and mic audio to separate channels
+    let channel_buffer = AudioChannelBuffer::new(config.channels as usize, has_apps, has_microphone);
 
     // Create shared state for the output handler
     let state = Arc::new(Mutex::new(AudioOutputState {
@@ -1053,8 +1109,8 @@ fn run_capture(
         last_status_update: Instant::now(),
         event_tx: event_tx.clone(),
         pids: config.pids.clone(),
-        mixing_buffer,
-        channels: config.channels as usize,
+        channel_buffer,
+        output_channels: output_channels as usize,
         last_app_rms: (-60.0, -60.0),
         last_mic_rms: (-60.0, -60.0),
     }));
@@ -1121,8 +1177,8 @@ fn run_capture(
 
     // Finalize the WAV file
     if let Ok(mut state) = state.lock() {
-        // Drain any remaining samples from the mixing buffer
-        let remaining = state.mixing_buffer.drain_remaining();
+        // Drain any remaining samples from the channel buffer
+        let remaining = state.channel_buffer.drain_remaining();
         for &sample in &remaining {
             let _ = state.wav_writer.write_sample(sample);
         }
