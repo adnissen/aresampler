@@ -125,12 +125,13 @@ impl AppState {
     pub(crate) fn render_hamburger_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::global(cx);
         let current_theme_name = theme.theme_name().to_string();
-        let icon_color = theme.foreground;
+        let icon_color = theme.muted_foreground;
 
         // Build the palette button with a dropdown menu showing themes directly
         Button::new("theme-menu")
             .ghost()
             .compact()
+            .mr(px(8.0))
             .child(
                 // Palette icon SVG
                 svg()
