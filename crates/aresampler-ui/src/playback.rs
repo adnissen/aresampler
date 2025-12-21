@@ -58,6 +58,7 @@ impl AudioPlayer {
 }
 
 /// Load samples from a WAV file for a specific region
+/// If the WAV has more than 2 channels, it will be mixed down to stereo for playback
 pub fn load_samples_for_region(
     path: &Path,
     start_fraction: f32,
@@ -87,7 +88,30 @@ pub fn load_samples_for_region(
     // Extract the region
     let start_sample = start_frame * channels;
     let end_sample = (end_frame * channels).min(all_samples.len());
-    let region_samples = all_samples[start_sample..end_sample].to_vec();
+    let region_samples = &all_samples[start_sample..end_sample];
 
-    Ok((region_samples, sample_rate, spec.channels))
+    // If 4-channel (app L/R + mic L/R), mix down to stereo for playback
+    if channels == 4 {
+        let num_frames = region_samples.len() / 4;
+        let mut stereo_samples = Vec::with_capacity(num_frames * 2);
+
+        for frame in 0..num_frames {
+            let base = frame * 4;
+            let app_l = region_samples.get(base).copied().unwrap_or(0.0);
+            let app_r = region_samples.get(base + 1).copied().unwrap_or(0.0);
+            let mic_l = region_samples.get(base + 2).copied().unwrap_or(0.0);
+            let mic_r = region_samples.get(base + 3).copied().unwrap_or(0.0);
+
+            // Mix: sum app and mic, clamp to prevent clipping
+            let left = (app_l + mic_l).clamp(-1.0, 1.0);
+            let right = (app_r + mic_r).clamp(-1.0, 1.0);
+
+            stereo_samples.push(left);
+            stereo_samples.push(right);
+        }
+
+        Ok((stereo_samples, sample_rate, 2))
+    } else {
+        Ok((region_samples.to_vec(), sample_rate, spec.channels))
+    }
 }

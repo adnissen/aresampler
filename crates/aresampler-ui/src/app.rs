@@ -1,6 +1,6 @@
 use crate::playback::{AudioPlayer, load_samples_for_region};
 use crate::source_selection::{
-    ProcessItem, SourceEntry, SourceSelectionState, render_placeholder_icon,
+    SourceEntry, SourceItem, SourceSelectionState, render_placeholder_icon,
 };
 use crate::waveform::{DragHandle, TrimSelection, WaveformData, WaveformView, trim_wav_file};
 use aresampler_core::{
@@ -177,22 +177,20 @@ impl AppState {
     fn subscribe_to_source(source: &SourceEntry, index: usize, cx: &mut Context<Self>) {
         cx.subscribe(
             &source.select_state,
-            move |this, _, event: &SelectEvent<SearchableVec<ProcessItem>>, cx| {
-                if let SelectEvent::Confirm(Some(pid)) = event {
-                    // Find the selected process by PID
-                    if let Some(process) = this.source_selection.find_process(*pid) {
-                        let process_clone = process.clone();
-                        this.source_selection
-                            .set_selected(index, process_clone.clone());
+            move |this, _, event: &SelectEvent<SearchableVec<SourceItem>>, cx| {
+                if let SelectEvent::Confirm(Some(value)) = event {
+                    // Find the selected source by value
+                    if let Some(source_item) = this.source_selection.find_source(value) {
+                        this.source_selection.set_selected(index, source_item);
                         this.error_message = None;
 
                         // Update other dropdowns to filter out this selection
                         // Note: This is handled in refresh_source_dropdown when dropdown opens
 
-                        // Start/restart monitoring when any source changes to ensure all sources
-                        // are captured with aligned timing (for pre-roll and level metering)
-                        if !this.source_selection.selected_pids().is_empty() {
-                            this.start_monitoring(&process_clone, cx);
+                        // Start/restart monitoring when any source is selected
+                        // (works for both apps and microphones)
+                        if this.source_selection.has_any_selection() {
+                            this.start_monitoring(cx);
                         }
 
                         cx.notify();
@@ -226,11 +224,8 @@ impl AppState {
         // Restart monitoring with remaining sources to clear pre-roll buffer
         // and ensure timing alignment
         if self.is_monitoring {
-            let pids = self.source_selection.selected_pids();
-            if !pids.is_empty() {
-                if let Some(process) = self.source_selection.sources[0].selected_process.clone() {
-                    self.start_monitoring(&process, cx);
-                }
+            if self.source_selection.has_any_selection() {
+                self.start_monitoring(cx);
             } else {
                 // No sources left, stop monitoring
                 self.stop_monitoring(cx);
@@ -291,13 +286,16 @@ impl AppState {
         cx.notify();
     }
 
-    fn start_monitoring(&mut self, _process: &ProcessItem, cx: &mut Context<Self>) {
+    fn start_monitoring(&mut self, cx: &mut Context<Self>) {
         // Stop any existing monitoring/recording session
         self.stop_monitoring(cx);
 
-        // Get all selected PIDs
+        // Get all selected PIDs (from app sources) and microphone ID
         let pids = self.source_selection.selected_pids();
-        if pids.is_empty() {
+        let microphone_id = self.source_selection.selected_microphone_id();
+
+        // Must have at least one source (app or microphone)
+        if pids.is_empty() && microphone_id.is_none() {
             return;
         }
 
@@ -305,6 +303,7 @@ impl AppState {
             pids,
             sample_rate: self.sample_rate,
             pre_roll_duration_secs: self.pre_roll_seconds,
+            microphone_id,
             ..Default::default()
         };
 
@@ -349,10 +348,9 @@ impl AppState {
             self.stop_playback(cx);
         }
 
-        // Get all selected PIDs
-        let pids = self.source_selection.selected_pids();
-        if pids.is_empty() {
-            self.error_message = Some("Please select a process".into());
+        // Check if any source is selected (app or microphone)
+        if !self.source_selection.has_any_selection() {
+            self.error_message = Some("Please select a source".into());
             cx.notify();
             return;
         }
@@ -387,10 +385,13 @@ impl AppState {
         }
 
         // Direct recording mode (no monitoring)
+        let pids = self.source_selection.selected_pids();
+        let microphone_id = self.source_selection.selected_microphone_id();
         let config = CaptureConfig {
             pids,
             output_path: path.clone(),
             sample_rate: self.sample_rate,
+            microphone_id,
             ..Default::default()
         };
 
@@ -670,9 +671,12 @@ impl AppState {
     }
 
     fn restart_monitoring(&mut self, cx: &mut Context<Self>) {
-        // Get all selected PIDs
+        // Get all selected PIDs (from app sources) and microphone ID
         let pids = self.source_selection.selected_pids();
-        if pids.is_empty() {
+        let microphone_id = self.source_selection.selected_microphone_id();
+
+        // Must have at least one source (app or microphone)
+        if pids.is_empty() && microphone_id.is_none() {
             return;
         }
 
@@ -680,6 +684,7 @@ impl AppState {
             pids,
             sample_rate: self.sample_rate,
             pre_roll_duration_secs: self.pre_roll_seconds,
+            microphone_id,
             ..Default::default()
         };
 
@@ -978,22 +983,9 @@ impl Render for AppState {
                                                                                     value,
                                                                                 );
                                                                         }
-                                                                    } else if !this
-                                                                        .source_selection
-                                                                        .selected_pids()
-                                                                        .is_empty()
-                                                                    {
+                                                                    } else if this.source_selection.has_any_selection() {
                                                                         // Not monitoring but has sources - start monitoring
-                                                                        if let Some(process) = this
-                                                                            .source_selection
-                                                                            .first_selected_process(
-                                                                            )
-                                                                            .cloned()
-                                                                        {
-                                                                            this.start_monitoring(
-                                                                                &process, cx,
-                                                                            );
-                                                                        }
+                                                                        this.start_monitoring(cx);
                                                                     }
                                                                     this.pre_roll_seconds = value;
                                                                     cx.notify();
@@ -1089,16 +1081,7 @@ impl Render for AppState {
                                                                     this.sample_rate = value;
                                                                     // Restart monitoring if active to apply new sample rate
                                                                     if this.is_monitoring {
-                                                                        if let Some(process) = this
-                                                                            .source_selection
-                                                                            .first_selected_process(
-                                                                            )
-                                                                            .cloned()
-                                                                        {
-                                                                            this.start_monitoring(
-                                                                                &process, cx,
-                                                                            );
-                                                                        }
+                                                                        this.start_monitoring(cx);
                                                                     }
                                                                     cx.notify();
                                                                 },
@@ -1384,11 +1367,11 @@ impl AppState {
             )
     }
 
-    /// Render a single source (application) selection card
+    /// Render a single source (application or microphone) selection card
     fn render_source_card(&self, index: usize, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::global(cx);
         let source = &self.source_selection.sources[index];
-        let has_selection = source.selected_process.is_some();
+        let has_selection = source.selected_source.is_some();
         let is_first = index == 0;
 
         // Get level for this source (if available)
@@ -1404,7 +1387,7 @@ impl AppState {
         let theme_secondary = theme.secondary;
         let theme_danger = theme.danger;
 
-        // Label text changes based on state
+        // Label text changes based on state and source type
         let label_text = if has_waveform {
             "RECORDED FROM"
         } else {
@@ -1437,23 +1420,37 @@ impl AppState {
                                     h_flex()
                                         .gap_3()
                                         .items_center()
-                                        // Icon
-                                        .child(if let Some(process) = &source.selected_process {
-                                            if let Some(icon) = &process.icon {
+                                        // Icon (different for app vs microphone)
+                                        .child(match &source.selected_source {
+                                            Some(SourceItem::App(process)) => {
+                                                if let Some(icon) = &process.icon {
+                                                    div()
+                                                        .size(px(28.0))
+                                                        .rounded(px(6.0))
+                                                        .overflow_hidden()
+                                                        .child(
+                                                            img(ImageSource::Render(icon.clone()))
+                                                                .size(px(28.0)),
+                                                        )
+                                                        .into_any_element()
+                                                } else {
+                                                    render_placeholder_icon(cx).into_any_element()
+                                                }
+                                            }
+                                            Some(SourceItem::Microphone(_)) => {
+                                                // Microphone icon
                                                 div()
                                                     .size(px(28.0))
                                                     .rounded(px(6.0))
-                                                    .overflow_hidden()
-                                                    .child(
-                                                        img(ImageSource::Render(icon.clone()))
-                                                            .size(px(28.0)),
-                                                    )
+                                                    .bg(gpui::rgb(0x4a9eff))
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_center()
+                                                    .text_sm()
+                                                    .child("🎤")
                                                     .into_any_element()
-                                            } else {
-                                                render_placeholder_icon(cx).into_any_element()
                                             }
-                                        } else {
-                                            render_placeholder_icon(cx).into_any_element()
+                                            None => render_placeholder_icon(cx).into_any_element(),
                                         })
                                         // Text content
                                         .child(
@@ -1478,11 +1475,11 @@ impl AppState {
                                                         })
                                                         .child(
                                                             source
-                                                                .selected_process
+                                                                .selected_source
                                                                 .as_ref()
-                                                                .map(|p| p.name.clone())
+                                                                .map(|s| s.name().to_string())
                                                                 .unwrap_or_else(|| {
-                                                                    "Select application..."
+                                                                    "Select source..."
                                                                         .to_string()
                                                                 }),
                                                         ),
@@ -1566,7 +1563,7 @@ impl AppState {
     /// Get the level for a specific source by index
     fn get_source_level(&self, index: usize) -> f32 {
         let source = &self.source_selection.sources[index];
-        if let Some(process) = &source.selected_process {
+        if let Some(SourceItem::App(process)) = &source.selected_source {
             // Try to find per-source stats for this PID
             if let Some(source_stat) = self
                 .stats
@@ -1577,7 +1574,7 @@ impl AppState {
                 return (source_stat.left_rms_db + source_stat.right_rms_db) / 2.0;
             }
         }
-        // Fallback to combined level
+        // Fallback to combined level (for microphones or when per-source stats unavailable)
         (self.stats.left_rms_db + self.stats.right_rms_db) / 2.0
     }
 
