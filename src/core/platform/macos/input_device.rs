@@ -1,6 +1,6 @@
 //! macOS audio input device enumeration using ScreenCaptureKit's AVFoundation wrapper
 
-use crate::types::InputDevice;
+use crate::core::types::InputDevice;
 use anyhow::Result;
 use screencapturekit::audio_devices::AudioInputDevice;
 

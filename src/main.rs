@@ -2,11 +2,12 @@
 #![windows_subsystem = "windows"]
 use anyhow::Result;
 use gpui::*;
-use gpui_component::init as init_components;
+use gpui_component::{Theme, init as init_components};
 
 mod app;
 mod assets;
 mod config;
+mod core;
 mod playback;
 mod source_selection;
 mod theme;

@@ -3,7 +3,7 @@
 //! This module provides the `ProcessItem` type for representing audio sources and
 //! the `SourceSelectionState` struct for managing source selection state.
 
-use aresampler_core::{
+use crate::core::{
     AudioSessionInfo, InputDevice, enumerate_audio_sessions, enumerate_input_devices,
     get_app_icon_png,
 };

@@ -1,11 +1,47 @@
-[workspace]
-resolver = "2"
-members = [
-    "crates/aresampler-core",
-    "crates/aresampler-ui",
-]
+[package]
+name = "aresampler"
+version = "0.3.0"
+edition = "2021"
+description = "Cross-platform process audio capture and resampling application"
+license = "Apache-2.0"
 
-[workspace.dependencies]
+[[bin]]
+name = "aresampler"
+path = "src/main.rs"
+
+[dependencies]
+# Shared dependencies
 anyhow = "1.0"
-wasapi = "0.21"
 hound = "3.5"
+
+# Core library dependencies
+sysinfo = "0.31"
+thiserror = "1.0"
+
+# UI dependencies
+gpui = { git = "https://github.com/zed-industries/zed" }
+gpui-component = { git = "https://github.com/longbridge/gpui-component" }
+dirs = "5.0"
+image = "0.25"
+rodio = "0.19"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+rust-embed = "8.5"
+
+# Windows-specific dependencies
+[target.'cfg(target_os = "windows")'.dependencies]
+wasapi = "0.21"
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+] }
+
+# macOS-specific dependencies
+[target.'cfg(target_os = "macos")'.dependencies]
+screencapturekit = "1.4.1"
+core-media-rs = "0.3"
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSData", "NSString", "NSURL", "NSDictionary"] }
+objc2-app-kit = { version = "0.3", features = ["NSWorkspace", "NSImage", "NSBitmapImageRep", "NSGraphicsContext"] }

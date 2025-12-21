@@ -1,6 +1,6 @@
 //! Cross-platform process utilities
 
-use crate::types::ProcessInfo;
+use crate::core::types::ProcessInfo;
 use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
 
 /// Check if a process with the given PID exists

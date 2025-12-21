@@ -1,6 +1,6 @@
 //! macOS TCC permission handling for ScreenCaptureKit
 
-use crate::types::PermissionStatus;
+use crate::core::types::PermissionStatus;
 use anyhow::Result;
 use screencapturekit::shareable_content::SCShareableContent;
 

@@ -5,7 +5,7 @@ use crate::source_selection::{
 use crate::theme::ThemeRegistry;
 use crate::waveform::{DragHandle, TrimSelection, WaveformData, WaveformView, trim_wav_file};
 use crate::SwitchTheme;
-use aresampler_core::{
+use crate::core::{
     CaptureConfig, CaptureEvent, CaptureSession, CaptureStats, MonitorConfig, PermissionStatus,
     is_capture_available, request_capture_permission,
 };

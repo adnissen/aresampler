@@ -123,30 +123,20 @@ name = "aresampler"
 version = "0.3.0"
 dependencies = [
  "anyhow",
- "aresampler-core",
+ "core-media-rs",
  "dirs 5.0.1",
  "gpui",
  "gpui-component",
  "hound",
  "image",
- "rodio",
- "rust-embed",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "aresampler-core"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "core-media-rs",
- "hound",
- "image",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
+ "rodio",
+ "rust-embed",
  "screencapturekit 1.4.2",
+ "serde",
+ "serde_json",
  "sysinfo",
  "thiserror 1.0.69",
  "wasapi",

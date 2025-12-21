@@ -1,6 +1,6 @@
 //! macOS audio session enumeration using ScreenCaptureKit
 
-use crate::types::AudioSessionInfo;
+use crate::core::types::AudioSessionInfo;
 use anyhow::{anyhow, Result};
 use screencapturekit::shareable_content::SCShareableContent;
 

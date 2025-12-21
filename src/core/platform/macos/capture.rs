@@ -1,8 +1,8 @@
 //! macOS audio capture implementation using ScreenCaptureKit
 
-use crate::process::process_exists;
-use crate::ring_buffer::AudioRingBuffer;
-use crate::types::{
+use crate::core::process::process_exists;
+use crate::core::ring_buffer::AudioRingBuffer;
+use crate::core::types::{
     CaptureCommand, CaptureConfig, CaptureEvent, CaptureStats, MonitorConfig, SourceStats,
 };
 use anyhow::{anyhow, Context, Result};
@@ -705,7 +705,7 @@ fn run_monitor(
     }
 
     // Normalize sample rate to ScreenCaptureKit supported values (8000, 16000, 24000, 48000)
-    let sample_rate = crate::types::normalize_sample_rate(config.sample_rate);
+    let sample_rate = crate::core::types::normalize_sample_rate(config.sample_rate);
     if sample_rate != config.sample_rate {
         eprintln!(
             "Warning: Sample rate {} Hz is not supported by ScreenCaptureKit. Using {} Hz instead.",
@@ -965,7 +965,7 @@ fn run_capture(
     }
 
     // Normalize sample rate to ScreenCaptureKit supported values (8000, 16000, 24000, 48000)
-    let sample_rate = crate::types::normalize_sample_rate(config.sample_rate);
+    let sample_rate = crate::core::types::normalize_sample_rate(config.sample_rate);
     if sample_rate != config.sample_rate {
         eprintln!(
             "Warning: Sample rate {} Hz is not supported by ScreenCaptureKit. Using {} Hz instead.",
