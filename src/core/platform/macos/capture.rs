@@ -368,6 +368,8 @@ struct MonitorOutputState {
     last_app_rms: (f32, f32),
     /// Last RMS values for mic audio (left, right)
     last_mic_rms: (f32, f32),
+    /// Target channel count per source (typically 2 for stereo)
+    target_channels: usize,
 }
 
 /// Handler for receiving audio samples from ScreenCaptureKit
@@ -581,15 +583,29 @@ impl SCStreamOutputTrait for MonitorAudioHandler {
             }
         }
 
-        // Interleave samples
-        let mut interleaved = Vec::with_capacity(num_frames * num_channels);
-        for frame_idx in 0..num_frames {
-            for ch in 0..num_channels {
-                if let Some(&sample) = channel_samples.get(ch).and_then(|s| s.get(frame_idx)) {
-                    interleaved.push(sample);
+        // Interleave samples, converting mono to stereo if needed
+        let target_channels = state.target_channels;
+        let interleaved = if num_channels == 1 && target_channels == 2 {
+            // Mono to stereo: duplicate each sample to both L and R
+            let mono_samples = channel_samples.first().unwrap();
+            let mut stereo = Vec::with_capacity(num_frames * 2);
+            for &sample in mono_samples.iter() {
+                stereo.push(sample); // L
+                stereo.push(sample); // R
+            }
+            stereo
+        } else {
+            // Normal interleaving for stereo or matching channel counts
+            let mut interleaved = Vec::with_capacity(num_frames * num_channels);
+            for frame_idx in 0..num_frames {
+                for ch in 0..num_channels {
+                    if let Some(&sample) = channel_samples.get(ch).and_then(|s| s.get(frame_idx)) {
+                        interleaved.push(sample);
+                    }
                 }
             }
-        }
+            interleaved
+        };
 
         // Push to channel buffer
         state.channel_buffer.push(self.audio_source, &interleaved);
@@ -845,6 +861,7 @@ fn run_monitor(
         output_channels: output_channels as usize,
         last_app_rms: (-60.0, -60.0),
         last_mic_rms: (-60.0, -60.0),
+        target_channels: config.channels as usize,
     }));
 
     let stop_flag = Arc::new(AtomicBool::new(false));
