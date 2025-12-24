@@ -48,7 +48,7 @@ pub mod types;
 #[allow(unused_imports)]
 pub use types::{
     AudioSessionInfo, CaptureCommand, CaptureConfig, CaptureEvent, CaptureStats, InputDevice,
-    MonitorConfig, PermissionStatus, ProcessInfo, SourceStats,
+    MicrophoneConfig, MonitorConfig, PermissionStatus, ProcessInfo, SourceStats,
 };
 
 // Re-export ring buffer

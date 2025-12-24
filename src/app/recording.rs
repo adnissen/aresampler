@@ -12,12 +12,12 @@ impl AppState {
         // Stop any existing monitoring/recording session
         self.stop_monitoring(cx);
 
-        // Get all selected PIDs (from app sources) and microphone ID
+        // Get all selected PIDs (from app sources) and microphones
         let pids = self.source_selection.selected_pids();
-        let microphone_id = self.source_selection.selected_microphone_id();
+        let microphones = self.source_selection.selected_microphones();
 
         // Must have at least one source (app or microphone)
-        if pids.is_empty() && microphone_id.is_none() {
+        if pids.is_empty() && microphones.is_empty() {
             return;
         }
 
@@ -25,7 +25,7 @@ impl AppState {
             pids,
             sample_rate: self.sample_rate,
             pre_roll_duration_secs: self.pre_roll_seconds,
-            microphone_id,
+            microphones,
             ..Default::default()
         };
 
@@ -59,12 +59,12 @@ impl AppState {
 
     /// Restart monitoring with current sources
     pub(crate) fn restart_monitoring(&mut self, cx: &mut Context<Self>) {
-        // Get all selected PIDs (from app sources) and microphone ID
+        // Get all selected PIDs (from app sources) and microphones
         let pids = self.source_selection.selected_pids();
-        let microphone_id = self.source_selection.selected_microphone_id();
+        let microphones = self.source_selection.selected_microphones();
 
         // Must have at least one source (app or microphone)
-        if pids.is_empty() && microphone_id.is_none() {
+        if pids.is_empty() && microphones.is_empty() {
             return;
         }
 
@@ -72,7 +72,7 @@ impl AppState {
             pids,
             sample_rate: self.sample_rate,
             pre_roll_duration_secs: self.pre_roll_seconds,
-            microphone_id,
+            microphones,
             ..Default::default()
         };
 
@@ -148,12 +148,12 @@ impl AppState {
 
         // Direct recording mode (no monitoring)
         let pids = self.source_selection.selected_pids();
-        let microphone_id = self.source_selection.selected_microphone_id();
+        let microphones = self.source_selection.selected_microphones();
         let config = CaptureConfig {
             pids,
             output_path: path.clone(),
             sample_rate: self.sample_rate,
-            microphone_id,
+            microphones,
             ..Default::default()
         };
 

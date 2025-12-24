@@ -2,7 +2,9 @@
 //!
 //! Uses rubato for high-quality sinc interpolation resampling.
 
-use rubato::{Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction};
+use rubato::{
+    Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
+};
 
 /// Resampler that handles sample rate conversion for audio streams.
 /// Lazily initializes when a sample rate mismatch is detected.
@@ -44,13 +46,57 @@ impl AudioResampler {
 
         let resampler = self.resampler.as_mut()?;
 
-        // Process the samples
-        match resampler.process(samples, None) {
+        // Process the samples using process_partial for variable-length input
+        match resampler.process_partial(Some(samples), None) {
             Ok(output) => Some(output),
             Err(e) => {
                 eprintln!("Resampling error: {:?}", e);
                 None
             }
+        }
+    }
+
+    /// Process interleaved audio samples, resampling if needed.
+    ///
+    /// This is a convenience method that handles de-interleaving, resampling,
+    /// and re-interleaving. If rates match, returns the input unchanged.
+    ///
+    /// # Arguments
+    /// * `input_rate` - The sample rate of the input audio
+    /// * `interleaved` - Interleaved samples (L0, R0, L1, R1, ...)
+    ///
+    /// # Returns
+    /// Interleaved resampled samples, or the original samples if rates match.
+    pub fn process_interleaved(&mut self, input_rate: u32, interleaved: &[f32]) -> Vec<f32> {
+        // If rates match, return input unchanged
+        if input_rate == self.output_rate {
+            return interleaved.to_vec();
+        }
+
+        // De-interleave into planar format
+        let num_frames = interleaved.len() / self.channels;
+        let mut planar: Vec<Vec<f32>> = vec![Vec::with_capacity(num_frames); self.channels];
+
+        for (i, &sample) in interleaved.iter().enumerate() {
+            let channel = i % self.channels;
+            planar[channel].push(sample);
+        }
+
+        // Resample
+        if let Some(resampled) = self.process(input_rate, &planar) {
+            // Re-interleave
+            let output_frames = resampled.first().map(|v| v.len()).unwrap_or(0);
+            let mut output = Vec::with_capacity(output_frames * self.channels);
+
+            for frame_idx in 0..output_frames {
+                for ch in 0..self.channels {
+                    output.push(resampled[ch].get(frame_idx).copied().unwrap_or(0.0));
+                }
+            }
+            output
+        } else {
+            // Resampling failed, return original
+            interleaved.to_vec()
         }
     }
 
@@ -69,7 +115,7 @@ impl AudioResampler {
 
         // Create the resampler
         // chunk_size is the expected input size - use a reasonable default
-        // that will be expanded as needed
+        // process_partial handles variable-length input
         let chunk_size = 1024;
 
         match SincFixedIn::new(

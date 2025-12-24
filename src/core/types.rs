@@ -37,6 +37,13 @@ pub struct InputDevice {
     pub is_default: bool,
 }
 
+/// Configuration for a microphone to capture
+#[derive(Clone, Debug)]
+pub struct MicrophoneConfig {
+    /// Device ID for the microphone
+    pub id: String,
+}
+
 /// Validates and normalizes a sample rate for macOS ScreenCaptureKit
 ///
 /// ScreenCaptureKit supports sample rates of 8000, 16000, 24000, and 48000 Hz.
@@ -65,8 +72,8 @@ pub struct CaptureConfig {
     pub sample_rate: u32,
     pub channels: u16,
     pub bits_per_sample: u16,
-    /// Optional microphone device ID to mix with app audio (macOS 15.0+ only)
-    pub microphone_id: Option<String>,
+    /// Microphones to capture (macOS 15.0+ only, each gets its own stream)
+    pub microphones: Vec<MicrophoneConfig>,
 }
 
 impl Default for CaptureConfig {
@@ -77,7 +84,7 @@ impl Default for CaptureConfig {
             sample_rate: 48000,
             channels: 2,
             bits_per_sample: 32,
-            microphone_id: None,
+            microphones: Vec::new(),
         }
     }
 }
@@ -91,8 +98,8 @@ pub struct MonitorConfig {
     pub channels: u16,
     /// Pre-roll buffer duration in seconds (0 = no buffering)
     pub pre_roll_duration_secs: f32,
-    /// Optional microphone device ID to mix with app audio (macOS 15.0+ only)
-    pub microphone_id: Option<String>,
+    /// Microphones to capture (macOS 15.0+ only, each gets its own stream)
+    pub microphones: Vec<MicrophoneConfig>,
 }
 
 impl Default for MonitorConfig {
@@ -102,7 +109,7 @@ impl Default for MonitorConfig {
             sample_rate: 48000,
             channels: 2,
             pre_roll_duration_secs: 10.0,
-            microphone_id: None,
+            microphones: Vec::new(),
         }
     }
 }

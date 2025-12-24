@@ -682,12 +682,9 @@ fn run_capture(
     event_tx: &Sender<CaptureEvent>,
 ) -> Result<()> {
     // Create capture context with apps and optional microphone
-    let mut ctx = CaptureContext::new(
-        &config.pids,
-        config.microphone_id.as_deref(),
-        config.sample_rate,
-        config.channels,
-    )?;
+    // Windows currently supports only a single microphone, take the first if any
+    let mic_id = config.microphones.first().map(|m| m.id.as_str());
+    let mut ctx = CaptureContext::new(&config.pids, mic_id, config.sample_rate, config.channels)?;
 
     // Notify UI that capture has started
     let _ = event_tx.send(CaptureEvent::Started { buffer_size: 4800 });
@@ -820,12 +817,9 @@ fn run_monitor(
     event_tx: &Sender<CaptureEvent>,
 ) -> Result<()> {
     // Create capture context with apps and optional microphone
-    let mut ctx = CaptureContext::new(
-        &config.pids,
-        config.microphone_id.as_deref(),
-        config.sample_rate,
-        config.channels,
-    )?;
+    // Windows currently supports only a single microphone, take the first if any
+    let mic_id = config.microphones.first().map(|m| m.id.as_str());
+    let mut ctx = CaptureContext::new(&config.pids, mic_id, config.sample_rate, config.channels)?;
 
     // Create ring buffer with output channel count (per-source channels)
     let mut ring_buffer = AudioRingBuffer::new(

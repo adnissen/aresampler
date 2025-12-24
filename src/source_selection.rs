@@ -4,8 +4,8 @@
 //! the `SourceSelectionState` struct for managing source selection state.
 
 use crate::core::{
-    AudioSessionInfo, InputDevice, enumerate_audio_sessions, enumerate_input_devices,
-    get_app_icon_png,
+    AudioSessionInfo, InputDevice, MicrophoneConfig, enumerate_audio_sessions,
+    enumerate_input_devices, get_app_icon_png,
 };
 use gpui::{
     AnyElement, App, AppContext, Context, Entity, ImageSource, IntoElement, ParentElement,
@@ -416,6 +416,19 @@ impl SourceSelectionState {
                 .and_then(|src| src.as_microphone())
                 .map(|m| m.id.clone())
         })
+    }
+
+    /// Get all selected microphones as MicrophoneConfig list.
+    pub fn selected_microphones(&self) -> Vec<MicrophoneConfig> {
+        self.sources
+            .iter()
+            .filter_map(|s| {
+                s.selected_source
+                    .as_ref()
+                    .and_then(|src| src.as_microphone())
+                    .map(|m| MicrophoneConfig { id: m.id.clone() })
+            })
+            .collect()
     }
 
     /// Get the values of all selected sources (for filtering).

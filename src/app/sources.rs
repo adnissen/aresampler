@@ -1,16 +1,16 @@
 //! Source management: adding, removing, subscribing to audio sources
 //! Also contains source card rendering helpers
 
-use super::{colors, AppState};
+use super::{AppState, colors};
 use crate::source_selection::{SourceEntry, SourceItem, render_placeholder_icon};
 use gpui::{
     Context, ElementId, FontWeight, ImageSource, InteractiveElement, IntoElement, ParentElement,
-    Styled, Window, prelude::FluentBuilder, img, px, relative,
+    Styled, Window, img, prelude::FluentBuilder, px, relative,
 };
 use gpui_component::{
-    Theme,
-    h_flex, v_flex,
+    Theme, h_flex,
     select::{SearchableVec, Select, SelectEvent},
+    v_flex,
 };
 
 impl AppState {
@@ -57,7 +57,12 @@ impl AppState {
     }
 
     /// Remove a source by index.
-    pub(crate) fn remove_source(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn remove_source(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.source_selection.remove_source(index);
         // Update all dropdowns after removal
         self.source_selection.update_all_dropdowns(window, cx);
@@ -160,7 +165,11 @@ impl AppState {
     }
 
     /// Render a single source (application or microphone) selection card
-    pub(crate) fn render_source_card(&self, index: usize, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(crate) fn render_source_card(
+        &self,
+        index: usize,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let theme = Theme::global(cx);
         let source = &self.source_selection.sources[index];
         let has_selection = source.selected_source.is_some();
@@ -270,8 +279,7 @@ impl AppState {
                                                                 .as_ref()
                                                                 .map(|s| s.name().to_string())
                                                                 .unwrap_or_else(|| {
-                                                                    "Select source..."
-                                                                        .to_string()
+                                                                    "Select source...".to_string()
                                                                 }),
                                                         ),
                                                 ),
@@ -306,7 +314,9 @@ impl AppState {
                                         })
                                         // Chevron (only show for first source, hide when locked)
                                         .when(is_first && !is_locked, |this| {
-                                            this.child(gpui::div().text_color(theme_muted_fg).child("▼"))
+                                            this.child(
+                                                gpui::div().text_color(theme_muted_fg).child("▼"),
+                                            )
                                         }),
                                 )
                                 // Level meter (inside the card, below the content row) - hide when waveform displayed (but show during recording)
@@ -352,18 +362,24 @@ impl AppState {
     /// Get the level for a specific source by index
     pub(crate) fn get_source_level(&self, index: usize) -> f32 {
         let source = &self.source_selection.sources[index];
-        if let Some(SourceItem::App(process)) = &source.selected_source {
-            // Try to find per-source stats for this PID
-            if let Some(source_stat) = self
-                .stats
-                .per_source_stats
-                .iter()
-                .find(|s| s.pid == process.pid)
-            {
-                return (source_stat.left_rms_db + source_stat.right_rms_db) / 2.0;
+        match &source.selected_source {
+            Some(SourceItem::App(process)) => {
+                // Try to find per-source stats for this PID
+                if let Some(source_stat) = self
+                    .stats
+                    .per_source_stats
+                    .iter()
+                    .find(|s| s.pid == process.pid)
+                {
+                    return (source_stat.left_rms_db + source_stat.right_rms_db) / 2.0;
+                }
             }
+            Some(SourceItem::Microphone(_)) => {
+                // Microphone stats come through combined RMS, fall through to fallback
+            }
+            None => {}
         }
-        // Fallback to combined level (for microphones or when per-source stats unavailable)
+        // Fallback to combined level when per-source stats unavailable
         (self.stats.left_rms_db + self.stats.right_rms_db) / 2.0
     }
 
