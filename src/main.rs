@@ -2,9 +2,9 @@
 #![windows_subsystem = "windows"]
 use anyhow::Result;
 use gpui::*;
-use gpui_component::init as init_components;
 #[cfg(target_os = "macos")]
 use gpui_component::Theme;
+use gpui_component::init as init_components;
 
 mod app;
 mod assets;
@@ -71,7 +71,7 @@ fn main() -> Result<()> {
                 origin: Point::default(),
                 size: Size {
                     width: px(320.0),
-                    height: px(550.0),
+                    height: px(650.0),
                 },
             })),
             titlebar: Some(TitlebarOptions {
