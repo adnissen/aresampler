@@ -3,7 +3,7 @@ name = "aresampler"
 version = "0.3.0"
 edition = "2024"
 description = "Cross-platform process audio capture and resampling application"
-license = "Apache-2.0"
+license = "AGPL"
 
 [[bin]]
 name = "aresampler"
