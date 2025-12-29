@@ -21,7 +21,7 @@ jobs:
       - name: Get Cargo.toml version
         id: cargo
         run: |
-          version=$(grep '^version = ' crates/aresampler-ui/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          version=$(grep '^version = ' crates/aresampler/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
           echo "version=$version" >> $GITHUB_OUTPUT
 
       - name: Check version match
