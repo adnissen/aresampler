@@ -314,15 +314,15 @@ impl MultiSourceBuffer {
 struct CaptureContext {
     /// WASAPI clients for app audio (one per PID)
     app_clients: Vec<AudioClientHandle>,
-    /// Optional microphone client
-    mic_client: Option<MicrophoneClientHandle>,
+    /// Microphone clients (one per selected microphone)
+    mic_clients: Vec<MicrophoneClientHandle>,
     /// Multi-source buffer for interleaving
     source_buffer: MultiSourceBuffer,
     /// Output channel count
     output_channels: u16,
     /// Sample rate
     sample_rate: u32,
-    /// PIDs for per-source stats (apps first, then mic uses PID 0)
+    /// PIDs for per-source stats (apps first, then mics use PID 0)
     pids: Vec<u32>,
 }
 
@@ -330,15 +330,15 @@ impl CaptureContext {
     /// Create a new capture context with the given sources
     fn new(
         pids: &[u32],
-        microphone_id: Option<&str>,
+        microphone_ids: &[&str],
         sample_rate: u32,
         channels: u16,
     ) -> Result<Self> {
         let has_apps = !pids.is_empty();
-        let has_mic = microphone_id.is_some();
+        let has_mics = !microphone_ids.is_empty();
 
         // Validate at least one source
-        if !has_apps && !has_mic {
+        if !has_apps && !has_mics {
             return Err(anyhow!("No audio source specified"));
         }
 
@@ -399,27 +399,27 @@ impl CaptureContext {
             });
         }
 
-        // Create microphone client if specified
-        let mic_client = if let Some(mic_id) = microphone_id {
-            Some(create_microphone_client(mic_id, sample_rate, channels)?)
-        } else {
-            None
-        };
+        // Create microphone clients for all specified microphones
+        let mut mic_clients: Vec<MicrophoneClientHandle> = Vec::new();
+        for mic_id in microphone_ids {
+            let mic_client = create_microphone_client(mic_id, sample_rate, channels)?;
+            mic_clients.push(mic_client);
+        }
 
         // Calculate total source count and create buffer
-        let source_count = pids.len() + if has_mic { 1 } else { 0 };
+        let source_count = pids.len() + mic_clients.len();
         let source_buffer = MultiSourceBuffer::new(source_count, sample_rate);
         let output_channels = source_buffer.output_channels();
 
-        // Build PID list for stats (apps first, mic uses PID 0)
+        // Build PID list for stats (apps first, each mic uses PID 0)
         let mut stat_pids: Vec<u32> = pids.to_vec();
-        if has_mic {
+        for _ in 0..mic_clients.len() {
             stat_pids.push(0); // PID 0 represents microphone
         }
 
         Ok(Self {
             app_clients,
-            mic_client,
+            mic_clients,
             source_buffer,
             output_channels,
             sample_rate,
@@ -436,7 +436,7 @@ impl CaptureContext {
                 .map_err(|e| anyhow!("Failed to start app audio stream: {}", e))?;
         }
 
-        if let Some(ref mic) = self.mic_client {
+        for mic in &self.mic_clients {
             mic.audio_client
                 .start_stream()
                 .map_err(|e| anyhow!("Failed to start microphone stream: {}", e))?;
@@ -451,7 +451,7 @@ impl CaptureContext {
             let _ = client.audio_client.stop_stream();
         }
 
-        if let Some(ref mic) = self.mic_client {
+        for mic in &self.mic_clients {
             let _ = mic.audio_client.stop_stream();
         }
     }
@@ -467,7 +467,7 @@ impl CaptureContext {
             }
         }
 
-        if let Some(ref mic) = self.mic_client {
+        for mic in &self.mic_clients {
             if mic.event_handle.wait_for_event(5).is_ok() {
                 any_data = true;
             }
@@ -489,11 +489,11 @@ impl CaptureContext {
             }
         }
 
-        // Read from microphone client
-        if let Some(ref mut mic) = self.mic_client {
+        // Read from all microphone clients
+        for (mic_idx, mic) in self.mic_clients.iter_mut().enumerate() {
             let samples = Self::read_mic_samples(mic);
             if !samples.is_empty() {
-                let mic_source_idx = self.app_clients.len();
+                let mic_source_idx = self.app_clients.len() + mic_idx;
                 per_source_samples.push((0, samples.clone())); // PID 0 for mic
                 self.source_buffer.push(mic_source_idx, &samples);
             }
@@ -681,10 +681,9 @@ fn run_capture(
     command_rx: &Receiver<CaptureCommand>,
     event_tx: &Sender<CaptureEvent>,
 ) -> Result<()> {
-    // Create capture context with apps and optional microphone
-    // Windows currently supports only a single microphone, take the first if any
-    let mic_id = config.microphones.first().map(|m| m.id.as_str());
-    let mut ctx = CaptureContext::new(&config.pids, mic_id, config.sample_rate, config.channels)?;
+    // Create capture context with apps and all selected microphones
+    let mic_ids: Vec<&str> = config.microphones.iter().map(|m| m.id.as_str()).collect();
+    let mut ctx = CaptureContext::new(&config.pids, &mic_ids, config.sample_rate, config.channels)?;
 
     // Notify UI that capture has started
     let _ = event_tx.send(CaptureEvent::Started { buffer_size: 4800 });
@@ -816,10 +815,9 @@ fn run_monitor(
     command_rx: &Receiver<CaptureCommand>,
     event_tx: &Sender<CaptureEvent>,
 ) -> Result<()> {
-    // Create capture context with apps and optional microphone
-    // Windows currently supports only a single microphone, take the first if any
-    let mic_id = config.microphones.first().map(|m| m.id.as_str());
-    let mut ctx = CaptureContext::new(&config.pids, mic_id, config.sample_rate, config.channels)?;
+    // Create capture context with apps and all selected microphones
+    let mic_ids: Vec<&str> = config.microphones.iter().map(|m| m.id.as_str()).collect();
+    let mut ctx = CaptureContext::new(&config.pids, &mic_ids, config.sample_rate, config.channels)?;
 
     // Create ring buffer with output channel count (per-source channels)
     let mut ring_buffer = AudioRingBuffer::new(
